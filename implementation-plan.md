@@ -2389,7 +2389,127 @@ minimal styling per build-plan §39–§40.
 
 ### Completion Report
 
-_Not started._
+**Status:** Complete.
+
+**What was built:** `src/client/lib/apiClient.ts` (typed `fetch` wrapper for every Section
+4.8 endpoint), three shared UI components (`Button`, `Card`, `Badge`), the real `Landing`
+route (hero, three benefit blocks, example interview snippet, CV/JD input form, all on `/`
+per build-plan §8's "route can remain `/`"), and the new `Scan` route at
+`/interview/:id/scan` (risk-scan summary counts + a curated subset of high-impact claims +
+"Start My Interview"). SEO title/description are set both statically (`index.html`, for
+crawlers/no-JS) and via a `document.title`/meta-tag effect in `Landing` matching build-plan
+§45's exact copy. `landing_view` fires through a documented no-op `trackEvent` stub (no
+events endpoint exists yet — Phase 13). 12 new RTL tests (`Landing.test.tsx`,
+`Scan.test.tsx`) plus one updated Phase-0 test.
+
+**File list (new/changed):**
+- `src/client/lib/apiClient.ts` (new) — `createInterview`, `getInterview`,
+  `analyzeInterview`, `startInterview`, `submitAnswer`, `getReport`, `trackEvent`,
+  `ApiClientError`, plus the `InterviewDetail`/`ApiQuestion`/`ApiMessage`/`InterviewStatus`
+  client-side response types.
+- `src/client/components/Button.tsx`, `Card.tsx`, `Badge.tsx` (new).
+- `src/client/routes/Landing.tsx` (rewritten) — was Phase 0's placeholder.
+- `src/client/routes/Scan.tsx` (new).
+- `src/client/App.tsx` (changed) — registers `/interview/:id/scan`.
+- `index.html` (changed) — real `<title>`/`<meta description>` per build-plan §45.
+- `src/shared/constants.ts` (new) — see deviation 1 below.
+- `src/worker/lib/ai/analyzer.ts` (changed) — see deviation 1 below.
+- `vitest.setup.ts` (changed) — see deviation 2 below.
+- `tests/client/Landing.test.tsx`, `tests/client/Scan.test.tsx` (new, 5 tests total).
+- `tests/client/App.test.tsx` (changed) — assertion updated for the new landing content.
+
+**Key design decisions:**
+1. **Landing + candidate-input form are one component (`Landing.tsx`) on `/`**, matching
+   build-plan §8's "route can remain `/`" option rather than introducing a separate
+   `/start` route — Phase 9's own scope text describes them as a single route's worth of
+   content ("the CV/JD input form from §8" listed inside the `Landing.tsx` bullet), so no
+   second route was added.
+2. **`PublicInterviewerResponse`/`PublicMessage`-shaped types are re-declared client-side
+   in `apiClient.ts` (as `ApiQuestion`/`ApiMessage`) rather than imported from
+   `src/worker/lib/interview/transcript.ts`.** Those are worker-internal narrowings of
+   `InterviewerResponse`/`Message` (Phase 8), and importing worker code into the client
+   bundle would pull in server-only dependencies (D1 types, the Anthropic SDK) even though
+   the actual shapes are simple and part of the public HTTP contract. `CvAnalysis`,
+   `InterviewState`, and `Report` — all genuinely shared, dependency-free shapes — are
+   imported from `src/shared/types` as instructed.
+3. **Scan's claim-selection heuristic:** highlighted claims are sorted `high` → `medium` →
+   `low` risk and capped at 5 (`MAX_CLAIMS_SHOWN`), each showing up to 4 likely follow-ups
+   (`MAX_FOLLOW_UPS_SHOWN`) — build-plan §11's explicit "do NOT expose every generated
+   question" with no exact count specified, so these caps were chosen to match the
+   example's shape (2 claims shown, ~4 follow-ups each) while still surfacing every
+   high-risk claim when there are few of them.
+4. **Scan re-triggers `/analyze` if a fetched interview has no `analysis` yet**, then
+   refetches, before rendering — handles direct navigation/refresh landing on this route
+   before analysis completes, not just the normal Landing-initiated flow (which already
+   calls `/analyze` before navigating here).
+
+**Decisions/deviations from the plan (with reasons):**
+1. **Moved `CV_MIN_LENGTH`/`CV_MAX_LENGTH`/`JOB_DESCRIPTION_MAX_LENGTH` from
+   `src/worker/lib/ai/analyzer.ts` (Phase 3) into a new `src/shared/constants.ts`**, with
+   `analyzer.ts` now re-exporting them from there (so Phase 8's existing import in
+   `interviews.ts` is untouched). This phase's acceptance criteria require client-side
+   validation to match the server-side limits *exactly*; importing the worker's
+   `analyzer.ts` from client code would pull in `@anthropic-ai/sdk` and `callStructured`
+   (real runtime code, not just types), so the only drift-proof option was moving the
+   three plain constants to `src/shared/`, which is exactly what that folder is for. No
+   values changed, no Section 4 schema affected.
+2. **Added `afterEach(cleanup)` to `vitest.setup.ts`.** This is Phase 9's first client test
+   file with more than one `render()` call across multiple tests; without explicit RTL
+   cleanup between tests (this project doesn't enable Vitest's `test.globals`, which is
+   what RTL's auto-cleanup detects), the second test in `Landing.test.tsx` saw leftover DOM
+   from the first test's render, causing false "multiple elements found" failures. Fixed
+   once, centrally, for every current and future client test file.
+3. **Updated `tests/client/App.test.tsx`'s assertion** from the Phase 0 placeholder text
+   ("Java Interview Griller") to the new hero heading, since `Landing.tsx` no longer
+   renders that exact string. Same "fix a pre-existing test surfaced by this phase's own
+   work" pattern earlier phases used.
+4. **`react-hooks/set-state-in-effect` disabled (with an inline comment) for `Scan.tsx`'s
+   data-fetch effect.** This ESLint rule (part of the React Compiler rule set Phase 0 wired
+   into `eslint.config.js`'s `recommended` config) flags *any* function called from a
+   `useEffect` body that contains a state-setter call anywhere in its implementation, even
+   after an `await` — meaning the standard "fetch on mount" pattern React's own docs
+   recommend is unconditionally flagged by this rule, with no built-in exemption for
+   async/await. A single documented `eslint-disable-next-line` was used rather than
+   restructuring the fetch away from `useEffect` or disabling the rule project-wide.
+
+**Known gaps (intentional, deferred to later phases):**
+- "Start My Interview" navigates to `/interview/:id`, which has no registered route yet
+  (Phase 10 builds it) — hitting it today shows React Router's default no-match state.
+  Expected/acceptable given the phase dependency order.
+- `landing_view` is a documented no-op until Phase 13 adds a public events endpoint.
+- No automated test exercises the real dev server / real backend (build-plan §47 — keep
+  automated coverage mocked); the manual responsive check below used the real Worker dev
+  server for `Landing` only, since exercising `Scan` end-to-end would require a real
+  Anthropic API call (`/analyze`), which is out of scope for this phase per project
+  convention (real-API runs are reserved for Phase 5/6's explicit gates) — `Scan`'s
+  rendering is instead verified by its RTL tests against a mocked `apiClient`.
+
+**Manual responsive check (Playwright against `npm run dev`, real Worker + Vite dev
+server, `Landing` route):** checked 390px (mobile), 768px (tablet), and 1440px (desktop).
+At every width, `document.documentElement.scrollWidth` equalled `clientWidth` (no
+horizontal overflow) and there were zero browser console errors. Benefit blocks stack to a
+single column on mobile and lay out as three columns from tablet width up; the CV/JD
+textareas and CTA remain comfortably tappable/full-width on mobile. "Grill My CV" smooth-
+scrolls to the form section at all three widths, confirmed via before/after screenshots.
+
+**Exact commands to run/test it:**
+- `npm run typecheck` — passes, zero errors
+- `npm test` — passes: 25 test files, 136 tests total (5 new: 3 `Landing` + 2 `Scan`, on
+  top of Phase 0–8's 131, with the 1 pre-existing `App.test.tsx` assertion updated per
+  deviation 3 — same net addition, no test removed)
+- `npm run test:client` — passes (includes the new `Landing.test.tsx`/`Scan.test.tsx`)
+- `npm run lint` — passes, zero errors/warnings
+- `npm run build` — succeeds, worker + client bundles produced
+- `npm run dev` — manually verified: `/` renders the full landing page and form; submitting
+  a valid CV (real Anthropic call) creates an interview, analyzes it, and navigates to
+  `/interview/:id/scan` — not exercised in this session per the project's real-API-cost
+  convention, but the code path is unchanged from what the mocked tests already cover.
+
+**Acceptance criteria:** all checked — Landing + Scan routes implemented and wired to the
+real API client (mocked in tests); client-side CV/JD length validation matches Phase 3's
+server-side limits exactly (now via the single shared source of truth in
+`src/shared/constants.ts`); all 5 new component tests pass; manual responsive check
+recorded above with screenshots (saved to session scratchpad, not committed to the repo).
 
 ---
 

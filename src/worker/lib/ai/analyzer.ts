@@ -5,12 +5,12 @@ import { callStructured, type StructuredAiCallResult } from "./client";
 /**
  * Input length limits this module assumes have already been enforced by the caller
  * (Phase 8's API route validates the request body before calling `analyzeCv` — this
- * module does not itself reject long input). Exported so Phase 8 stays consistent
- * with the limits this prompt was designed/tested around (build-plan §38).
+ * module does not itself reject long input). Re-exported here (moved to
+ * `src/shared/constants.ts` in Phase 9 so the client can enforce the same limits
+ * without importing worker code) so existing imports of these names from this module
+ * keep working unchanged.
  */
-export const CV_MIN_LENGTH = 200;
-export const CV_MAX_LENGTH = 20_000;
-export const JOB_DESCRIPTION_MAX_LENGTH = 10_000;
+export { CV_MIN_LENGTH, CV_MAX_LENGTH, JOB_DESCRIPTION_MAX_LENGTH } from "../../../shared/constants";
 
 export interface AnalyzeCvInput {
   cvText: string;

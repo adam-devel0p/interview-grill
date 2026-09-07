@@ -3,8 +3,8 @@ import { render, screen } from "@testing-library/react";
 import App from "../../src/client/App";
 
 describe("App", () => {
-  it("renders the placeholder landing page", () => {
+  it("renders the landing page at the root route", () => {
     render(<App />);
-    expect(screen.getByText("Java Interview Griller")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /will your java cv survive a senior engineer/i })).toBeInTheDocument();
   });
 });
