@@ -1,9 +1,10 @@
+import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import app from "../../src/worker/index";
 
 describe("GET /api/health", () => {
   it("returns ok: true", async () => {
-    const res = await app.request("/api/health");
+    const res = await app.request("/api/health", {}, env);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
   });

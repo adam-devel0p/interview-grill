@@ -2166,7 +2166,173 @@ mocked)
 
 ### Completion Report
 
-_Not started._
+**Status:** Complete.
+
+**What was built:** All six `/api/interviews*` routes from Section 4.8
+(`src/worker/routes/interviews.ts`), stub `/api/payments/checkout` and
+`/api/webhooks/lemonsqueezy` routes (501, real implementations are Phase 12), a
+`createApp(options)` factory (`src/worker/index.ts`) that wires config/Anthropic-client
+middleware + all three route groups + a central error handler, the central error handler
+itself (`src/worker/lib/errors.ts`), a small Hono context-typing module
+(`src/worker/lib/honoEnv.ts`), and a message-content (de)serialization module
+(`src/worker/lib/interview/transcript.ts`) that every route goes through instead of
+inlining `JSON.parse`/`JSON.stringify` on stored message content. Plus a full mocked-AI,
+real-test-D1 integration suite (9 tests) and one incidental fix to a Phase 0 test.
+
+**File list (new/changed):**
+- `src/worker/routes/interviews.ts` (new) — all five `/api/interviews*` routes.
+- `src/worker/routes/payments.ts`, `src/worker/routes/webhooks.ts` (new) — 501 stubs.
+- `src/worker/lib/honoEnv.ts` (new) — `AppVariables`/`AppEnv` (the Hono `{Bindings,
+  Variables}` generic), shared by `index.ts` and every route module.
+- `src/worker/lib/errors.ts` (new) — `ApiError`, `ValidationError`, `parseJsonBody`,
+  `registerErrorHandler`.
+- `src/worker/lib/interview/transcript.ts` (new) — `serializeInterviewerQuestion`,
+  `parseInterviewerMessageContent`, `toPublicQuestion`/`PublicInterviewerResponse`,
+  `toPublicMessage`, `buildRecentTranscript`, `buildReportTranscript`,
+  `getLatestInterviewerMessage`.
+- `src/worker/index.ts` (rewritten) — `createApp(options)` factory (was a bare
+  `new Hono()` with only `/api/health`); default-exports `createApp()`.
+- `tests/integration/routes/interviews.test.ts` (new, 9 tests), plus two small test
+  helpers: `tests/integration/helpers/anthropic.ts` (`scriptedAnthropic`,
+  `toolUseMessage`, `FakeApiError`) and `tests/integration/helpers/http.ts` (`postJson`).
+- `tests/unit/health.test.ts` (changed) — see deviation 1 below.
+
+**Key design decisions (documented per the phase's own instructions):**
+
+1. **AI-mocking seam:** `createApp({ anthropicFactory? })` lets tests inject a fake
+   `Anthropic` client (same `{ messages: { create: vi.fn(...) } }` shape Phase 2/3/5/6's
+   unit tests already use) instead of the real SDK client `createApp()` builds by
+   default. A per-request middleware calls `anthropicFactory(config)` once and stores
+   both `config` and the client on Hono context variables (`c.get("config")`/
+   `c.get("anthropic")`), so route handlers never construct either themselves. This
+   keeps the exact same mocking style used throughout Phases 2–6 (mock
+   `messages.create`, never a module-level `vi.mock`) working at the HTTP-route level,
+   satisfying "AI mocked, real test D1" without introducing a second mocking mechanism.
+   `@cloudflare/vitest-pool-workers` runs tests inside real workerd, where module-level
+   `vi.mock` isn't a documented/supported path — this sidesteps that entirely.
+2. **`messages.content` encoding (Section 4.7's column is untyped TEXT):** an
+   `interviewer`-role message stores the **full JSON-serialized `InterviewerResponse`**
+   (question text + `targetClaimId`/`intent`/`difficulty`/`expectedConcepts`) — the next
+   turn's `evaluateAnswer` needs that whole object back, not just the question text — while
+   a `candidate`-role message stores the raw answer text as-is. `transcript.ts` is the one
+   place that (de)serializes this; every route goes through it.
+3. **Narrowing Section 4.8's `InterviewerResponse` response type to `PublicInterviewerResponse`
+   (`{ question, targetClaimId?, difficulty }`)** for `/start` and `/answer.nextQuestion`.
+   Section 4.8's table types those fields as the full `InterviewerResponse`, but Phase 5's
+   `generateQuestion` docstring is explicit that `expectedConcepts` "is used only for
+   internal grading, never shown to the candidate," and `intent` is equally internal
+   reasoning. Rather than trust the client to hide fields it was handed, the route strips
+   both server-side. This is a deliberate, documented narrowing of Section 4.8 — noted here
+   since a later phase reading Section 4.8 literally would expect the full type.
+   `expectedConcepts`/`intent` are still stored (inside `messages.content`) and used
+   internally (transcript building, `evaluateAnswer` context) — only the HTTP response is
+   narrowed.
+4. **GET `/api/interviews/:id` never exposes `evaluation`** on messages (`toPublicMessage`
+   drops it) and renders an `interviewer` message's `content` as just the parsed question
+   text (not the full JSON blob) — both are internal-only per Phase 5's evaluator/interviewer
+   docstrings; only the final report (a separate endpoint) is meant to reach the candidate.
+5. **`/analyze` idempotency key is `interview.analysis` presence, not `status` string.**
+   A second call with `analysis` already persisted returns it directly regardless of
+   `status`. Before the first attempt, `status` is set to `analyzing` up front (so a
+   concurrent `GET` mid-call can observe it); if `analyzeCv` then throws, `status` is
+   deliberately left at `analyzing` — not reverted, not `failed` — since a retried
+   `/analyze` call still finds no `analysis` and simply tries again. This is the exact
+   "remains at prior status" recoverable-state option the phase's Testing requirements
+   asked to pick and document.
+6. **`/answer`'s duplicate-submission guard is a "last message role" check**, done before
+   any DB write: if the transcript's most recent message is already `candidate`-role, the
+   call is rejected with `409 ANSWER_ALREADY_SUBMITTED` rather than reprocessed. This is
+   the plan's "simple 'last message role' check" option (the alternative offered was an
+   idempotency key). Verified in the integration suite by directly inserting a candidate
+   message via the DB layer to simulate "a prior call already got this far," then asserting
+   a subsequent `/answer` call is rejected without invoking the AI or writing a second
+   message — a deterministic way to exercise the exact guard condition, chosen over trying
+   to race two real concurrent HTTP requests (which Miniflare/D1 doesn't make reliably
+   deterministic to assert on in a test).
+7. **`/answer`'s free-limit/payment gating is the "always allowed" stub** the phase's scope
+   explicitly permits: every answer is processed while `status === "in_progress"`, with no
+   check against `PAYMENTS_ENABLED`/`FREE_ANSWER_LIMIT` yet. `freeAnswersUsed` is still
+   incremented on every answer (Phase 11 needs the counter to already be accurate when it
+   adds the gate on top).
+8. **`/answer`'s two-checkpoint write pattern for the "continue" path:** after evaluating
+   and applying the answer, `interviewState`/`freeAnswersUsed` are persisted in their own
+   `updateInterview` call *before* calling `generateQuestion` for the next question; only
+   after that succeeds is a second, smaller update applied (refined `activeClaimId` + the
+   new interviewer message). This means a `generateQuestion` failure (502) leaves the
+   interview `in_progress` with the just-evaluated answer fully and durably reflected in
+   `interviewState` — not lost, not silently marked `completed`. The one known gap: the
+   stuck interview then has no interviewer message following its last candidate message, so
+   the duplicate guard (#6) blocks all further `/answer` calls until a future phase adds a
+   "regenerate just the next question" recovery path — out of Phase 8's literal scope,
+   flagged here rather than silently left undocumented.
+9. **`/start`'s first question does not pre-select a claim via `selectNextClaim`** — it
+   calls `generateQuestion` with `activeClaim: undefined`, matching Phase 5's own prompt
+   design (`generateQuestion` already lists every untested claim and asks the model to pick
+   the most valuable one when no claim is in focus). `selectNextClaim` is reserved for its
+   originally-designed role: the deterministic fallback used in `/answer` when the AI's
+   `NEW_TOPIC` decision doesn't resolve to a real claim id.
+10. **`/report`'s `report_viewed` event fires on every successful call**, including
+    idempotent re-fetches of an already-generated report — each call genuinely represents
+    the candidate viewing the report, not just its first generation. Build-plan §43's event
+    list (enumerated in Phase 13's scope) names `report_viewed`, not a separate
+    `report_generated`, so no new event name was introduced.
+11. **`ANSWER_MAX_LENGTH = 5000`** is a new bound Phase 8 introduces itself (exported from
+    `interviews.ts`) — Phase 3 only documented CV/JD limits, and build-plan §38's "input
+    length limits for every text input" implies candidate answers need one too. No earlier
+    phase defined this value.
+
+**Decisions/deviations from the plan (with reasons):**
+1. **Fixed a latent bug in Phase 0's `tests/unit/health.test.ts`**, found while wiring this
+   phase's global config/Anthropic-client middleware: the test called
+   `app.request("/api/health")` with no third `env` argument, which happened to work only
+   because the Phase 0 handler never touched `c.env`. Once `createApp`'s middleware started
+   calling `getConfig(c.env)` for every route (including `/api/health`), the test crashed
+   with `Cannot read properties of undefined (reading 'ENVIRONMENT')`. Fixed by passing
+   `env` (from `cloudflare:test`) as the third argument, matching how every Phase 7/8
+   integration test already calls `app.request(path, init, env)`. Same "fix a bug in an
+   earlier phase's file, surfaced by this phase's own work" pattern Phases 5/6 used.
+2. **`src/worker/index.ts` now exports `createApp` (named) in addition to the default
+   export**, rather than only a bare app instance. The default export (`createApp()`) is
+   still what the Workers runtime uses in production/dev, unchanged in shape from Phase 0's
+   `export default app`; `createApp` itself is additive, needed for the AI-mocking seam
+   (decision 1 above).
+3. **No `GET /api/config/public` endpoint yet** — explicitly Phase 11's addition per its own
+   scope section, not referenced by anything in Phase 8's contract table.
+4. **No rate limiting, no `src/worker/lib/security.ts`/`rateLimit.ts` files** — §1's
+   repository layout lists these, but they are Phase 14's scope (security hardening pass),
+   not named anywhere in Phase 8's own scope text; creating them now would be speculative.
+
+**Known gaps (intentional, deferred to later phases):**
+- Free-limit/payment gating stub (#7 above) — Phase 11.
+- The "stuck interview" recovery path after a `generateQuestion` failure mid-turn (#8
+  above) — not built; the interview is left in a safe, non-corrupted, but blocked state
+  until a future phase adds a recovery route or retry mechanism. Not required by this
+  phase's literal acceptance criteria ("status reflects a recoverable state, not silently
+  marked completed/corrupted" — satisfied; full self-healing was not asked for).
+- Payments/webhooks routes are 501 stubs (Phase 12).
+- Rate limiting, deletion cascade, and the full §36/§37/§38 audit are Phase 14's job.
+
+**Exact commands to run/test it:**
+- `npm run typecheck` — passes, zero errors
+- `npm test` — passes: 23 test files, 131 tests total (9 new route-integration tests +
+  Phase 0–7's 122, with the 1 pre-existing health test fixed per deviation 1 — same total
+  test count as before since no test was removed, only repaired)
+- `npm run test:integration` — passes (includes the new
+  `tests/integration/routes/interviews.test.ts`)
+- `npm run lint` — passes, zero errors/warnings
+- `npm run build` — succeeds, worker + client bundles produced
+
+**Acceptance criteria:** all checked — every route from Section 4.8 is implemented
+(payments/webhooks as documented 501 stubs); the central error handler
+(`src/worker/lib/errors.ts`) maps `ValidationError`/`ApiError`/`InterviewNotFoundError`/
+`AiResponseValidationError`/`AiRequestError`/`SchemaValidationError`/unexpected errors to
+the `{ error: { code, message } }` contract with correct statuses (400/404/409/500/502),
+covering every build-plan §37 failure mode reachable at the API layer today (D1 errors and
+unexpected exceptions fall through to the generic 500 branch); the full integration suite
+(9 tests: happy path, analyze idempotency, duplicate-answer guard, report-before-completion,
+report idempotency, validation errors, 404s on every `:id` route, and AI-failure recovery
+for both `/analyze` and `/answer`) passes against real (test-instance) D1 with the AI fully
+mocked; no route handler exceeds 100 lines (`/answer`, the largest, is 93).
 
 ---
 
