@@ -1,0 +1,34 @@
+Tomasz Nowicki
+Junior Java Developer
+tomasz.nowicki.dev@example.com | Krakow, Poland
+
+SUMMARY
+Junior developer with 2 years of professional experience building Java web applications.
+Looking for a role where I can grow into a mid-level backend engineer.
+
+EXPERIENCE
+
+Junior Java Developer — BrightApps (2023 – Present, 2 years)
+- Built and maintained REST endpoints in a Spring Boot monolith for an internal
+  inventory-management tool used by ~50 warehouse staff.
+- Wrote SQL queries and simple JPA repositories against a MySQL database.
+- Fixed bugs reported by QA, wrote unit tests with JUnit for the endpoints I worked on.
+- Helped migrate the project from Java 8 to Java 17 under guidance from a senior engineer.
+- Used Docker to run the app locally; deployment was handled by a senior teammate.
+- Improved the performance of a slow inventory report by adding a database index.
+- Participated in code reviews and daily standups in a team of 5 engineers.
+
+Intern — BrightApps (Summer 2022, 3 months)
+- Shadowed the backend team, completed small tickets (typo fixes, adding validation to a
+  couple of form fields) under close supervision.
+
+EDUCATION
+B.Sc. Computer Science, AGH University of Krakow (2019 – 2023)
+
+TECHNOLOGIES
+Java 17, Spring Boot, MySQL, JPA/Hibernate (basic), JUnit, Docker (local use only), Git,
+IntelliJ
+
+PROJECTS
+- Personal project: a small Spring Boot to-do list app with a MySQL backend, deployed once
+  to a free-tier Heroku instance for a portfolio demo.

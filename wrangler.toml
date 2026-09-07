@@ -1,0 +1,27 @@
+name = "interview-grill"
+main = "src/worker/index.ts"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "development"
+PAYMENTS_ENABLED = "false"
+FREE_ANSWER_LIMIT = "3"
+ANALYSIS_MODEL = "claude-sonnet-5"
+INTERVIEW_MODEL = "claude-sonnet-5"
+REPORT_MODEL = "claude-sonnet-5"
+FULL_INTERVIEW_PRICE_EUR = "9"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "interview-grill-db"
+# Placeholder — not yet created because this environment has no Cloudflare login.
+# Run `wrangler login` then `wrangler d1 create interview-grill-db` and replace this id
+# before deploying or running any DB-backed integration tests against a real database.
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[assets]
+directory = "dist/client"
+not_found_handling = "single-page-application"
+binding = "ASSETS"

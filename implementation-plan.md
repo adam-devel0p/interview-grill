@@ -600,7 +600,100 @@ passing placeholder test in every test project. No product logic yet.
 
 ### Completion Report
 
-_Not started._
+**Status:** Complete.
+
+**What was built:** Full scaffolding per §1/Phase 0 scope — npm project, TypeScript, Vite +
+`@cloudflare/vite-plugin` + `@vitejs/plugin-react`, Hono worker with `GET /api/health`,
+React Router SPA with a single placeholder route, Tailwind v4, D1 binding wired in
+`wrangler.toml`, `src/worker/lib/config.ts` (`getConfig(env)`), `.dev.vars`/`.dev.vars.example`,
+two Vitest test suites (worker via `@cloudflare/vitest-pool-workers`, client via jsdom + RTL),
+ESLint flat config + Prettier, `.gitignore`, and the three CV/JD fixtures.
+
+**File list (new):**
+- `package.json`, `package-lock.json`, `tsconfig.json`, `vite.config.ts`, `vitest.config.ts`,
+  `vitest.setup.ts`, `wrangler.toml`, `tailwind.config.ts`, `postcss.config.js`,
+  `eslint.config.js`, `.prettierrc.json`, `.gitignore`, `.dev.vars.example`, `.dev.vars`
+  (git-ignored, local only), `index.html`
+- `src/client/main.tsx`, `src/client/App.tsx`, `src/client/routes/Landing.tsx`,
+  `src/client/styles/index.css`
+- `src/worker/index.ts` (Hono app, `GET /api/health`), `src/worker/lib/config.ts`
+- Empty target-layout directories (`src/client/components`, `src/worker/routes`,
+  `src/worker/lib/{ai,db,interview,payments}`, `src/shared/{types,schemas}`, `migrations/`,
+  `scripts/`) seeded with `.gitkeep` — populated in later phases.
+- `tests/unit/health.test.ts`, `tests/client/App.test.tsx`,
+  `tests/fixtures/cvs/{senior-java-cv,junior-java-cv}.txt`,
+  `tests/fixtures/jobDescriptions/senior-backend-jd.txt`
+
+**Decisions/deviations from the plan (with reasons):**
+1. **TypeScript pinned to 5.9.3, not the latest 7.x.** `npm install typescript` resolved to
+   TS 7 (the new native/Go-based compiler) by default, but `typescript-eslint` only supports
+   `<6.1.0` today and the wider tool ecosystem (Vitest, RTL types, etc.) isn't verified
+   against TS 7 yet. Pinned to the latest stable 5.x (5.9.3) for compatibility. Revisit once
+   `typescript-eslint` supports TS 7.
+2. **`@cloudflare/workers-types` removed in favor of `wrangler types`-generated runtime
+   types.** The installed `wrangler` (4.129.0) now generates a `worker-configuration.d.ts`
+   with full runtime types (superseding the old `@cloudflare/workers-types` package,
+   per wrangler's own migration notice) — used that instead, and added `worker-configuration.d.ts`
+   to `.gitignore` (regenerate locally via `npm run cf-typegen`; every var name is public
+   config, not a secret, but treating it as a build artifact avoids drift from `wrangler.toml`).
+3. **Vitest pinned to 4.1.11, not 5.x.** `npm install vitest` resolved to 5.0.0 by default,
+   but `@cloudflare/vitest-pool-workers@0.22.0`'s peer range is `^4.1.0` and is known to patch
+   Vitest internals — running it against Vitest 5 is a correctness risk, not just an unmet
+   peer warning. Pinned `vitest`, `@vitest/runner`, and `@vitest/snapshot` to `4.1.11`.
+4. **Worker test config uses `@cloudflare/vitest-pool-workers`'s `cloudflareTest` Vite plugin**
+   (`vitest.config.ts`, via `test.projects`), not a `test.pool` string — this is the current
+   API shape for the installed version. Three named projects: `unit` (→ `tests/unit/**`),
+   `integration` (→ `tests/integration/**`, `passWithNoTests: true` since Phase 0 adds none),
+   `client` (jsdom + RTL, → `tests/client/**`). `npm run test:unit` / `test:integration` /
+   `test:client` map to `vitest run --project <name>`; plain `npm test` runs all three.
+   RTL/client tests live under `tests/client/` (not co-located under `src/client/`) to keep
+   the jsdom-only glob unambiguous from the two workerd-runtime projects.
+5. **No real Cloudflare D1 database created yet.** This environment has no `wrangler login`
+   session (`wrangler whoami` → not authenticated), so `wrangler d1 create interview-grill-db`
+   couldn't be run. `wrangler.toml`'s `database_id` is a placeholder
+   (`00000000-0000-0000-0000-000000000000`) with a comment explaining this. Local `vite
+   dev`/`wrangler dev` still work fine (D1 is emulated locally regardless of a real remote
+   id). **Action needed from the user before Phase 7 (D1 Persistence) or any real deploy:**
+   run `wrangler login`, then `wrangler d1 create interview-grill-db`, and replace the
+   placeholder `database_id` in `wrangler.toml` (then re-run `npm run cf-typegen`).
+6. **`.dev.vars` created locally (git-ignored) with placeholder values** (including a dummy
+   `ANTHROPIC_API_KEY`) so `wrangler types` generates a complete `Env` type covering secrets,
+   not just `[vars]`. `.dev.vars.example` (committed) documents the same keys with empty
+   values, matching §2.
+7. Added `@eslint/js`, `typescript-eslint`, `eslint-plugin-react-hooks`,
+   `eslint-plugin-react-refresh`, `globals`, `@types/node`, and `tsx` as dev dependencies —
+   needed for a working flat ESLint config, Node types (required once `nodejs_compat` is on),
+   and the future `npm run interview:cli` (Phase 5), respectively. None of these were named
+   explicitly in §Scope item 2 but are required to satisfy items 1 ("ESLint... wired") and
+   10 (scripts) of Phase 0's scope, and Phase 5's CLI harness script name already reserved
+   here.
+
+**Known gaps (intentional, deferred to later phases):**
+- `migrations/0001_init.sql` not yet written — Section 4.7's schema exists only as a spec in
+  this document; Phase 7 (D1 Persistence Layer) is where it becomes a real migration file.
+- `scripts/interview-cli.ts` does not exist yet (`npm run interview:cli` will fail until
+  Phase 5); the script name is reserved in `package.json` now so Phase 5 doesn't need to
+  touch scripts.
+- Real D1 database not provisioned (see deviation 5 above).
+- No CI wiring — out of scope for Phase 0 per the plan.
+
+**Exact commands to run/test it:**
+- `npm install` (after `wrangler login` is not required for this)
+- `npm run typecheck` — passes, zero errors
+- `npm test` — passes: 2 test files, 2 tests (worker `unit` project's `/api/health` test,
+  client project's `App` placeholder-text test); `integration` project passes-with-no-tests
+- `npm run test:unit` / `npm run test:integration` / `npm run test:client` — each passes
+  individually
+- `npm run lint` — passes, zero errors/warnings
+- `npm run build` — succeeds, produces `dist/client` (SPA assets) and `dist/interview_grill`
+  (worker bundle)
+- `npm run dev` (or `npx vite dev`) — manually verified: serves the SPA at `/` (title "Java
+  Interview Griller" renders) and `GET /api/health` → `{"ok":true}`, both through the real
+  Workers runtime (workerd) via the Cloudflare Vite plugin.
+
+**Acceptance criteria:** all checked — `npm test` passes, `npm run typecheck` passes,
+`npm run build` succeeds, dev server serves the app and `/api/health`, repository layout
+matches §1 (empty target folders hold `.gitkeep`).
 
 ---
 

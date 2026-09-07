@@ -1,0 +1,32 @@
+Senior Backend Engineer — Payments Platform
+Company: Northwind Financial (fictional, for testing purposes)
+Location: Remote (EU timezones)
+
+ABOUT THE ROLE
+We're looking for a Senior Backend Engineer to join our Payments Platform team. You'll own
+critical services that process financial transactions at scale, working closely with our
+infrastructure and risk teams.
+
+RESPONSIBILITIES
+- Design and build resilient, event-driven microservices using Java and Spring Boot.
+- Own the reliability of high-throughput Kafka-based data pipelines, including exactly-once
+  processing guarantees for financial transactions.
+- Design and evolve our PostgreSQL data layer, including partitioning and read-scaling
+  strategies for tables with hundreds of millions of rows.
+- Drive incident response and write postmortems for production issues in the payments path.
+- Deploy and operate services on Kubernetes (EKS), with strong observability via
+  Prometheus/Grafana.
+- Mentor mid-level and junior engineers; participate in architecture reviews.
+
+REQUIRED QUALIFICATIONS
+- 7+ years of professional backend engineering experience, with deep Java expertise.
+- Production experience with Spring Boot, Kafka (or an equivalent event streaming system),
+  and relational databases at scale (PostgreSQL preferred).
+- Hands-on experience with Kubernetes and AWS.
+- Demonstrated ownership of a service through an incident from detection to postmortem.
+- Strong testing discipline: integration testing against real dependencies, not just mocks.
+
+NICE TO HAVE
+- Experience with financial systems, PCI-DSS, or other regulated environments.
+- Experience with event sourcing or CQRS.
+- AWS certification.

@@ -1,0 +1,62 @@
+Marta Kowalski
+Senior Backend Engineer — Java / Spring / Distributed Systems
+marta.kowalski.dev@example.com | Warsaw, Poland (remote-friendly)
+
+SUMMARY
+Backend engineer with 10 years of experience building and operating high-throughput Java
+services. Led the migration of a monolithic order-processing system to event-driven
+microservices at ShipFast. Comfortable owning services end-to-end: design, implementation,
+on-call, and cost.
+
+EXPERIENCE
+
+Senior Software Engineer — ShipFast Logistics (2019 – Present, 6 years)
+- Led the decomposition of a 400k-line Spring MVC monolith into 14 Spring Boot
+  microservices over 18 months, using the strangler fig pattern to migrate traffic
+  incrementally without a big-bang cutover.
+- Designed the event backbone on Apache Kafka: 3 clusters (6 brokers each), ~40 topics,
+  exactly-once semantics for the payment-settlement pipeline using Kafka transactions and
+  idempotent producers. Personally wrote the settlement consumer group's rebalance and
+  dead-letter-queue handling after we hit duplicate charges in production during a
+  broker failover in month 4.
+- Own the PostgreSQL data layer for the orders service (partitioned by shipment date,
+  ~180M rows, RDS Multi-AZ). Introduced read replicas and a Redis cache in front of the
+  hot "shipment status" query path, cutting p99 latency from 800ms to 90ms.
+- Improved system performance and reliability across the platform.
+- Migrated CI/CD from Jenkins to GitHub Actions and containerized all services with Docker,
+  deployed on Kubernetes (EKS). Wrote the Helm charts and the HPA policies for the three
+  highest-traffic services.
+- On-call lead for the payments pillar; wrote the postmortem for a Kafka consumer-lag
+  incident that traced back to an unbounded retry loop on a poison-pill message — added a
+  DLQ and a circuit breaker (Resilience4j) as the fix.
+- Worked closely with the platform team on observability: instrumented services with
+  Micrometer, Prometheus, and Grafana; built the on-call dashboard for consumer lag,
+  broker under-replicated partitions, and p95/p99 latency per endpoint.
+- We worked with AWS across the board — EC2, RDS, S3, SQS, EKS, CloudWatch.
+
+Software Engineer — FinEdge (2016 – 2019, 3 years)
+- Built REST APIs in Spring Boot for a small-business lending platform, backed by
+  PostgreSQL and Hibernate/JPA.
+- Wrote integration tests with Testcontainers against real PostgreSQL and Kafka instances;
+  pushed the team from ~30% to ~75% meaningful test coverage (measured via JaCoCo, focused
+  on branch coverage of the underwriting rules engine, not line coverage vanity metrics).
+- Implemented the underwriting rules engine's audit trail using event sourcing (custom,
+  not Axon) — every decision replayable from the append-only log.
+- Collaborated with the security team on a PCI-DSS scope reduction project — worked with
+  AWS.
+
+Junior Developer — FinEdge (2015 – 2016, 1 year)
+- Maintained a legacy Struts application, fixed bugs, wrote unit tests with JUnit and
+  Mockito.
+
+EDUCATION
+B.Sc. Computer Science, Warsaw University of Technology (2011 – 2015)
+
+TECHNOLOGIES
+Java 17, Spring Boot, Spring Cloud, Kafka, PostgreSQL, Redis, Hibernate/JPA, Docker,
+Kubernetes (EKS), Helm, AWS (EC2, RDS, S3, SQS, CloudWatch), GitHub Actions, Jenkins,
+Prometheus, Grafana, Micrometer, Resilience4j, JUnit 5, Mockito, Testcontainers, JaCoCo,
+Struts (legacy)
+
+CERTIFICATIONS
+AWS Certified Solutions Architect – Associate (2021)
