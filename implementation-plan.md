@@ -1055,7 +1055,73 @@ Prompt requirements (build-plan §9, §10, §35):
 
 ### Completion Report
 
-_Not started._
+**Status:** Complete.
+
+**What was built:** `src/worker/lib/ai/analyzer.ts` exporting `analyzeCv(anthropic, input, model)`,
+which calls `callStructured` (Phase 2) with `requestType: "analysis"` and `CvAnalysisSchema`
+(Phase 1) to turn `{ cvText, jobDescription? }` into a validated `CvAnalysis`. The system
+prompt establishes the "senior interviewer doing prep, not a resume summarizer" persona,
+enumerates every `ClaimCategorySchema` value so the model knows what to look for, includes
+the build-plan §35 "never invent facts" rule near-verbatim, explains each `TechnicalClaim`
+field (`sourceExcerpt` must be real, `riskLevel`/`confidence`/`reasoning`/`likelyQuestions`/
+`requiredDepth`), and separately instructs the model to collect `vagueClaims` (buzzword-y,
+under-specified statements like "improved performance") distinct from real claims, echoing
+build-plan §16's bullshit-detection framing. `jobMatch` instructions are appended to the
+system prompt only when a `jobDescription` is present; otherwise the prompt explicitly says
+not to populate or invent one. The CV/JD text itself goes in the user message, wrapped in
+`<candidate_cv>`/`<job_description>` tags so the two sources stay unambiguous to the model.
+
+**File list (new):**
+- `src/worker/lib/ai/analyzer.ts` — `analyzeCv`, `AnalyzeCvInput`, and exported length
+  constants `CV_MIN_LENGTH` (200), `CV_MAX_LENGTH` (20,000), `JOB_DESCRIPTION_MAX_LENGTH`
+  (10,000) for Phase 8 to enforce at the API boundary.
+- `tests/unit/ai/analyzer.test.ts` — 4 tests, all against a mocked `Anthropic` client
+  (same `fakeAnthropic`/`toolUseMessage` pattern as Phase 2's `client.test.ts`), no real
+  network calls: (1) no-JD call returns the parsed `CvAnalysis` and the prompt contains the
+  CV text but no job-description section/instructions; (2) with a JD, the prompt contains
+  the JD text and the system prompt's `jobMatch` instructions; (3) using the real
+  `senior-java-cv.txt`/`senior-backend-jd.txt` fixtures, the constructed prompt carries the
+  fixture content through unmodified (asserts on "Kafka", "Prometheus", and full-text
+  containment) — catches silent truncation; (4) a mocked response with a claim missing a
+  required field (`reasoning`) fails Zod validation and surfaces
+  `AiResponseValidationError` after the one corrective retry, confirming the Phase 1/2
+  validation wiring is actually invoked here.
+
+**Decisions/deviations from the plan (with reasons):**
+1. **Fixture files are imported with Vite's `?raw` suffix (`import x from ".../file.txt?raw"`),
+   not read via `node:fs`.** The `tests/unit/**` project runs under
+   `@cloudflare/vitest-pool-workers` (the real workerd runtime), which has no filesystem —
+   an initial `readFileSync` version of the fixture-content test failed with `ENOENT` even
+   though the file exists on disk, because the read never reaches the host filesystem.
+   `?raw` imports are resolved by Vite at transform time into an inlined string constant, so
+   the compiled test carries the fixture content with it into workerd. `vite/client` (already
+   in `tsconfig.json`'s `types`) provides the ambient `declare module '*?raw'` typing, so no
+   new type declarations were needed.
+2. **`analyzeCv`'s signature matches the plan exactly** (`anthropic, input, model` — no
+   `interviewId` parameter), even though `StructuredAiCallParams` supports an optional
+   `interviewId` for usage-logging context. Phase 3 has no interview/DB concept yet (that's
+   Phase 7/8); Phase 8's route handler can pass `interviewId` through to `callStructured`
+   directly if/when it wraps this call, without needing a change here.
+3. **No separate `buildSystemPrompt`/`buildUserMessage` exports.** The Phase 3 scope's public
+   surface is just `analyzeCv`; tests verify prompt construction by inspecting the mocked
+   `anthropic.messages.create` call arguments (same approach Phase 2's tests use for
+   `callStructured` itself), so no additional exports were needed for testability.
+
+**Known gaps:** None against Phase 3's scope. Actual enforcement of `CV_MIN_LENGTH`/
+`CV_MAX_LENGTH`/`JOB_DESCRIPTION_MAX_LENGTH` at the request boundary is Phase 8's job, as
+specified — this phase only documents and exports the limits it was designed around.
+
+**Exact commands to run/test it:**
+- `npm run typecheck` — passes, zero errors
+- `npm test` — passes: 11 test files, 55 tests total (4 new analyzer tests + Phase 0–2's 51)
+- `npm run test:unit` — passes (includes the new `tests/unit/ai/analyzer.test.ts`)
+- `npm run lint` — passes, zero errors/warnings
+- `npm run build` — succeeds, unaffected by this phase
+
+**Acceptance criteria:** all checked — `analyzeCv` implemented, uses `callStructured` from
+Phase 2, resolves `CvAnalysisSchema`; no hard-coded model name (`model` is a required
+parameter); expected max input lengths documented and exported for Phase 8; all tests pass
+with mocked AI only (zero real API calls).
 
 ---
 
