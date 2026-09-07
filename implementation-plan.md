@@ -1733,7 +1733,168 @@ Sanity-check it reads as genuinely useful and non-generic against the CV used.
 
 ### Completion Report
 
-_Not started._
+**Status:** Complete. Manual First-Milestone re-confirmation (including the report) passed against the real Anthropic API.
+
+**What was built:** `src/worker/lib/ai/report.ts` exporting `generateReport(anthropic, ctx, model)`,
+which turns `{ analysis, state, transcript }` (transcript = one `{ question, answer, evaluation }`
+entry per interview turn) into a validated `Report` (Section 4.6) covering every build-plan
+§22–§30 subsection. The system prompt writes directly to the candidate (unlike the evaluator,
+whose output is internal-only) and: instructs `overallReadiness`/`categoryScores` to reflect
+real interview performance rather than CV content alone; requires `claimRisk` entries only for
+claims actually tested, restricts `suggestedCvFraming` to genuinely justified cases; requires
+both `redFlags` and `strongAreas` to be evidence-only (empty is correct when nothing genuine
+exists, but padding one list to avoid emptiness — or omitting genuine findings — is explicitly
+prohibited); requires `betterAnswers.isExample: true` with clearly-illustrative phrasing for any
+AI-authored example content; asks for 1-10 `likelyFollowUpQuestions`; and asks `studyPriorities`
+to distinguish "doesn't know this" from "knows it but overstated personal involvement" per
+build-plan §29. `roleFit` instructions/context are included only when `analysis.jobMatch` is
+present. `generateReport` also structurally sanitizes the model's output afterward (see
+`sanitizeReport`): `categoryScores` is filtered to categories of actually-tested claims,
+`claimRisk` to actually-tested claim ids, and `roleFit` is stripped entirely if no job
+description was supplied — enforced in code, not just prompted, per build-plan §35 applying to
+the app's own post-processing too.
+
+**File list (new/changed):**
+- `src/worker/lib/ai/report.ts` (new) — `generateReport`, `GenerateReportContext`,
+  `ReportTranscriptTurn`.
+- `tests/unit/ai/report.test.ts` (new, 8 tests) — all mocked, no real network calls: full
+  round-trip prompt-construction + parsing; untested-high-risk-claims section present and
+  excluded from claimRisk scoring instructions; `roleFit` prompt/context present only with a
+  JD, and included in the result when the model returns it; `roleFit` stripped from the result
+  if the model adds one despite no JD; `categoryScores`/`claimRisk` filtered to tested
+  claims/categories even if the mocked model output includes untested ones; a "no redFlags"
+  and a "no strongAreas" mocked response each still validate end-to-end; malformed mocked
+  output (`overallReadiness: 150`) fails validation and follows the Phase 2 retry path.
+- `scripts/interview-cli.ts` (changed) — added a `--report` flag: after the interview loop
+  ends, it now calls `generateReport` on the real transcript (with per-turn evaluations,
+  accumulated in a new `reportTranscript` array alongside the existing plain-text
+  `transcript`) and prints the full JSON report. Also fixed a real, pre-existing stdin bug —
+  see deviation 1 below.
+- `implementation-plan.md` (this file) — this Completion Report only; no Section 4 contract
+  changes were needed (`Report`/`ReportSchema` from Phase 1 were implemented as-is).
+
+**Token-efficiency approach (build-plan §33/§38), as the phase asked to document:** unlike
+Phase 5's interviewer (which sends only a bounded *window* of recent turns since it runs once
+per question, mid-interview), the report is a single end-of-interview call and needs the whole
+interview to ground its claims — so every transcript turn is included, not windowed. To bound
+tokens instead, each answer is truncated to `MAX_ANSWER_CHARS_IN_PROMPT` (900 chars, `report.ts`)
+before being sent — long enough that no answer in real testing was actually truncated, but a
+backstop against pathological input — while each turn's evaluation is sent as a compact
+one-line summary (scores + strengths/weaknesses/missingConcepts/redFlag) rather than the full
+`AnswerEvaluation` object, and only claims that were actually tested (plus, separately, untested
+*high-risk* ones, for `studyPriorities` context only) are summarized, not the full CV claim list.
+
+**Decisions/deviations from the plan (with reasons):**
+1. **Fixed a real, pre-existing bug in `scripts/interview-cli.ts` (a Phase 5 file), found by
+   this phase's own manual verification run — same pattern as Phase 5 fixing Phase 3/2 bugs it
+   uncovered.** Piped/file-redirected stdin (needed to script a full interview run for manual
+   verification, since a human can't type reactive answers non-interactively) was silently
+   losing every answer after the first network round-trip. Root cause: `readline`'s
+   `createInterface` starts flowing/reading its input stream immediately on creation, emitting
+   `'line'` events for every already-available line — but the old code only called
+   `rl.question()` (which registers a listener for the *next* `'line'` event) after each
+   `generateQuestion` network call completed. Any line that arrived from the piped file while
+   that network call was in flight fired with no listener attached and was dropped. In the very
+   first real run, this meant the interview "completed after 1 question" every time, with zero
+   answers ever processed (misleadingly *not* crashing — Phase 5's `ERR_USE_AFTER_CLOSE` guard
+   caught the resulting immediate EOF and treated it as a graceful `/quit`, masking the real
+   problem). **Fix:** replaced `rl.question()` (from `node:readline/promises`) with a small
+   `createLineReader()` helper (`node:readline`, callback API) that attaches a persistent
+   `'line'` listener immediately on creation, queuing every line as it arrives (or resolving a
+   pending waiter if one is already asking) — so a line is captured the instant it's available
+   regardless of what async work is in flight, without changing behavior for real interactive
+   typing (where lines and `askLine()` calls are already naturally interleaved one at a time).
+   Verified via a piped 1-turn smoke test (the answer was correctly evaluated as off-topic by
+   the AI, since it didn't match the actual question asked — confirming both the fix and the
+   evaluator's mismatch-detection) before re-running the full milestone verification.
+2. **`generateReport`'s post-hoc `sanitizeReport` step (categoryScores/claimRisk filtering,
+   roleFit stripping) is new relative to the plan's bare function signature sketch** — the
+   phase's own "Scope" section explicitly flagged categoryScores as needing this ("consider
+   filtering the model's output post-hoc... rather than trusting the prompt alone"); the same
+   reasoning was extended to `claimRisk` (one entry per *tested* claim, per the phase's own
+   acceptance criteria) and `roleFit` (must be entirely absent with no JD) since both are
+   equally checkable from `ctx` without another AI call. In the real milestone run the model
+   already behaved correctly on its own (no filtering was actually needed), but the unit tests
+   cover the case where it doesn't.
+3. **`testedClaimIds()` (in `report.ts`) is the union of `state.testedClaimIds` and every claim
+   id ever targeted by a transcript question**, not just `state.testedClaimIds` alone. Phase
+   4's bookkeeping rule (see its Completion Report) only promotes a claim into
+   `testedClaimIds` once the controller's decision moves past `FOLLOW_UP`/`CLARIFY` on it — an
+   interview that ends mid-thread (question-count limit, or a human quitting) can have real,
+   evaluated transcript turns for a claim that never got promoted. Using the union ensures the
+   report doesn't silently drop evidence-backed claims just because the interview happened to
+   stop before the controller "closed out" that thread; this matches the phase's own framing
+   ("only tested ones have evidence" — the transcript itself is the evidence, not the internal
+   bookkeeping flag).
+
+**Manual First-Milestone re-confirmation (build-plan §52), end-to-end including the report, run
+against the real API via `scripts/interview-cli.ts --report --debug` on
+`tests/fixtures/cvs/senior-java-cv.txt` + `tests/fixtures/jobDescriptions/senior-backend-jd.txt`
+(pre-written answers piped in, deliberately mixing one genuinely strong/specific answer with
+many vague, buzzword-y, evasive, and off-topic ones to exercise the report's full range):**
+- [x] The final report accurately reflected performance: `overallReadiness: 32`, verdict
+  `HIGH_RISK`, correctly crediting the one strong answer (Kafka consumer-side dedupe) while
+  flagging that three claims (`c2` Kafka exactly-once, `c5` performance improvement, `c9` AWS
+  breadth) could not be substantiated under direct follow-up — a fair, specific, non-generic
+  read of exactly what happened in the transcript.
+- [x] `claimRisk` contained exactly the three tested claim ids (`c2`, `c5`, `c9`) — the fourth
+  high-risk CV claim (`c12`, PCI-DSS, never reached before the interview ended) correctly did
+  not get a risk entry, only a `studyPriorities` mention explicitly labeled "not covered in this
+  interview."
+- [x] `redFlags` (3 entries) and `strongAreas` (2 entries) were both populated with genuine,
+  transcript-grounded evidence — not padded, not omitted; the report was critical where earned
+  (AWS/performance evasion) and credited where earned (the Kafka dedupe answer), matching
+  build-plan §26's explicit "not purely critical" requirement.
+- [x] `betterAnswers` (3 entries) all set `isExample: true` with clearly illustrative
+  `strongerAnswerStructure` content (e.g. "transactional outbox pattern... CDC... idempotent
+  consumers downstream") that never overstates what the candidate actually said.
+- [x] `studyPriorities` correctly distinguished a genuine knowledge gap (priority 1: outbox
+  pattern — "this needs to be learned/practiced, not just reframed") from an
+  overstated-on-CV-vs-reality situation (priority 2: "the mechanism... is real and understood,
+  but the quantified 'improved performance' framing... outstrips what can currently be
+  substantiated — this needs CV reframing... not necessarily new technical learning"), directly
+  matching build-plan §29's required distinction.
+- [x] `roleFit` was populated (JD was supplied) with a fit percent and concerns consistent with
+  the interview's actual findings, not just the CV/JD match in isolation.
+- [x] No fabrication: every claim/redFlag/strongArea/betterAnswer traced to something concretely
+  said (or conspicuously not said) in the transcript; nothing about the candidate's employment
+  or projects was invented beyond the CV and transcript.
+
+**Example excerpt (studyPriorities distinguishing the two failure modes from build-plan §29):**
+> **Priority 1** — "Transactional outbox pattern...": *"This is a genuine knowledge gap — the
+> candidate understood the consumer-side dedupe half of the problem well but had no answer at
+> all for the event-publication half after three attempts. This needs to be learned/practiced,
+> not just reframed."*
+>
+> **Priority 2** — "Performance measurement practice and honest CV framing": *"This looks like a
+> case where the mechanism (read replica + cache) is real and understood, but the quantified
+> 'improved performance' framing on the CV outstrips what can currently be substantiated — this
+> needs CV reframing and honest practice under pressure, not necessarily new technical
+> learning."*
+
+**Known gaps:** None against Phase 6's own scope. The interview-cli stdin fix (deviation 1)
+is a real bug in a Phase 5 file, but Phase 5's own automated tests and its narrower "one real
+turn, then /quit" smoke test could not have caught it (a single piped answer sent immediately
+after process start can still race the very first `generateQuestion`/`analyzeCv` call
+depending on timing, but did not reproduce it during Phase 5's own verification) — Phase 5's
+existing tests are unaffected and still pass. `recordAiUsage`/D1 persistence of the report's
+`StructuredAiCallResult.usage` remains Phase 7/8 work, as specified.
+
+**Exact commands to run/test it:**
+- `npm run typecheck` — passes, zero errors
+- `npm test` — passes: 16 test files, 96 tests total (8 new report tests + Phase 0–5's 88)
+- `npm run test:unit` — passes (includes the new `tests/unit/ai/report.test.ts`)
+- `npm run lint` — passes, zero errors/warnings
+- `npm run build` — succeeds, unaffected by this phase
+- `npm run interview:cli -- --cv tests/fixtures/cvs/senior-java-cv.txt --jd tests/fixtures/jobDescriptions/senior-backend-jd.txt --debug --report` —
+  manual, real-API run producing a full interview + final report; requires a real
+  `ANTHROPIC_API_KEY` in `.dev.vars`
+
+**Acceptance criteria:** all checked — `generateReport` implemented, produces schema-valid
+output; every build-plan §22–§30 subsection has a corresponding, populated report field (all
+confirmed populated with genuine content in the real run above); the CLI harness produces an
+end-to-end report from a real interview run, with key excerpts recorded above; the First
+Milestone checklist (build-plan §52) was re-confirmed end-to-end including the report.
 
 ---
 
