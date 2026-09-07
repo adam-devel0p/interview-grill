@@ -104,6 +104,28 @@ function formatIssues(error: z.ZodError): { path: string; message: string }[] {
   return error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message }));
 }
 
+/**
+ * Models occasionally wrap a forced tool call's payload in an extra single key (e.g.
+ * `{ parameters: { ...actual fields... } }`), as if mimicking a function-call
+ * signature, instead of putting the schema's fields directly on `input`. If the raw
+ * input fails validation and is a plain single-key object, also try validating the
+ * value of that one key before giving up — strictly more permissive acceptance, not
+ * looser validation, since the unwrapped payload still has to match the schema.
+ */
+function parseStructuredInput<T>(schema: z.ZodType<T>, rawInput: unknown): ReturnType<z.ZodType<T>["safeParse"]> {
+  const direct = schema.safeParse(rawInput);
+  if (direct.success) return direct;
+
+  if (rawInput && typeof rawInput === "object" && !Array.isArray(rawInput)) {
+    const keys = Object.keys(rawInput as Record<string, unknown>);
+    if (keys.length === 1) {
+      const unwrapped = schema.safeParse((rawInput as Record<string, unknown>)[keys[0]!]);
+      if (unwrapped.success) return unwrapped;
+    }
+  }
+  return direct;
+}
+
 async function createMessageWithRetry(
   anthropic: Anthropic,
   body: MessageCreateParamsNonStreaming,
@@ -142,7 +164,7 @@ export async function callStructured<T>(
 
   const firstResponse = await createMessageWithRetry(anthropic, baseBody, requestType);
   const firstToolUse = findToolUseBlock(firstResponse);
-  const firstParsed = firstToolUse ? schema.safeParse(firstToolUse.input) : undefined;
+  const firstParsed = firstToolUse ? parseStructuredInput(schema, firstToolUse.input) : undefined;
 
   if (firstToolUse && firstParsed?.success) {
     return {
@@ -182,7 +204,7 @@ export async function callStructured<T>(
     requestType
   );
   const retryToolUse = findToolUseBlock(retryResponse);
-  const retryParsed = retryToolUse ? schema.safeParse(retryToolUse.input) : undefined;
+  const retryParsed = retryToolUse ? parseStructuredInput(schema, retryToolUse.input) : undefined;
 
   if (retryToolUse && retryParsed?.success) {
     return {

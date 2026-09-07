@@ -109,5 +109,10 @@ export async function analyzeCv(
     system: buildSystemPrompt(Boolean(input.jobDescription)),
     messages: [{ role: "user", content: buildUserMessage(input) }],
     schema: CvAnalysisSchema,
+    // A realistic senior CV can produce a dozen-plus claims, each with reasoning and
+    // several likelyQuestions — well past callStructured's 4096-token default, which
+    // truncates the structured output mid-generation. Found via Phase 5's manual
+    // milestone run against the real API (see that phase's Completion Report).
+    maxTokens: 8192,
   });
 }

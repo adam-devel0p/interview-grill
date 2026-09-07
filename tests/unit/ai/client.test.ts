@@ -76,6 +76,29 @@ describe("callStructured", () => {
     expect(toolResultBlock?.content).toContain("count");
   });
 
+  it("unwraps a single-key wrapper (e.g. { parameters: {...} }) around the tool input", async () => {
+    const create = vi.fn().mockResolvedValue(toolUseMessage({ parameters: { greeting: "hi", count: 3 } }));
+    const anthropic = fakeAnthropic(create);
+
+    const result = await callStructured(anthropic, baseParams);
+
+    expect(result.data).toEqual({ greeting: "hi", count: 3 });
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not unwrap a single-key object when the wrapper key happens to be a real schema field", async () => {
+    // A single-key payload that already validates directly must be used as-is, not
+    // unwrapped further.
+    const singleFieldSchema = z.object({ onlyField: z.string() });
+    const create = vi.fn().mockResolvedValue(toolUseMessage({ onlyField: "value" }));
+    const anthropic = fakeAnthropic(create);
+
+    const result = await callStructured(anthropic, { ...baseParams, schema: singleFieldSchema });
+
+    expect(result.data).toEqual({ onlyField: "value" });
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
   it("throws AiResponseValidationError when both attempts produce invalid output", async () => {
     const create = vi
       .fn()

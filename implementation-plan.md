@@ -1481,7 +1481,169 @@ this is the most important requirement in the whole project.
 
 ### Completion Report
 
-_Not started._
+**Status:** Complete. Manual First-Milestone checklist passed against the real Anthropic API.
+
+**What was built:**
+- `src/worker/lib/ai/interviewer.ts` — `generateQuestion(anthropic, ctx, model)`. System prompt
+  establishes the senior/skeptical persona with an explicit ban on encouragement language
+  ("Great answer!" etc., verbatim from build-plan §13), embeds the §51 before/after few-shot
+  examples (index/50ms, Kafka dual-write, DI bean-lifecycle) directly in the prompt, and instructs
+  chained failure-mode follow-ups (§41/§42), buzzword/vagueness challenges (§16), and "we"-language
+  challenges (§17) — all only where the conversation actually warrants them. `RECENT_TRANSCRIPT_WINDOW
+  = 6` (last ~3 Q&A exchanges) bounds token usage per build-plan §33/§38; everything older is
+  represented only via the compact `InterviewState` summary. If the model omits `targetClaimId` on a
+  follow-up to the claim already in focus, the code backfills it from `ctx.activeClaim.id` rather than
+  losing the association.
+- `src/worker/lib/ai/evaluator.ts` — `evaluateAnswer(anthropic, ctx, model)`, combining build-plan
+  Requests C+D (evaluator + controller) into one call per build-plan §34. Prompts for the seven
+  `AnswerEvaluation` scores grounded in the specific Q&A, instructs the model to phrase "we"-language
+  and contradiction findings using specific recognizable substrings so Phase 4's `state.ts` heuristics
+  (`WE_LANGUAGE_KEYWORDS`/`CONTRADICTION_KEYWORDS`) actually fire, and documents all six `NextAction`
+  values with concrete guidance (chain via GO_DEEPER, push via CHALLENGE, prefer untested high-risk
+  claims for NEW_TOPIC's `nextTarget`, etc.). Explicitly never invents facts (§35) and documents in
+  the module docstring that nothing it returns may reach the candidate mid-interview.
+- `scripts/interview-cli.ts` — the manual test harness (build-plan §53.9). Loads `.dev.vars`, reads a
+  CV (+ optional JD) from `--cv`/`--jd` paths, runs `analyzeCv` → loop of `generateQuestion` →
+  (human types an answer) → `evaluateAnswer` → `applyEvaluation` → `selectNextClaim`/`generateQuestion`
+  until `shouldCompleteInterview`, with `--debug` printing intent/difficulty/evaluation/decision to
+  stderr without polluting the visible transcript. `npm run interview:cli -- --cv <path> [--jd <path>]
+  [--debug] [--model <model>]`. Report generation is left as a TODO for Phase 6, per the plan.
+
+**File list (new/changed):**
+- `src/worker/lib/ai/interviewer.ts` (new), `src/worker/lib/ai/evaluator.ts` (new),
+  `scripts/interview-cli.ts` (new)
+- `tests/unit/ai/interviewer.test.ts` (new, 5 tests), `tests/unit/ai/evaluator.test.ts` (new, 4 tests)
+- `src/worker/lib/ai/analyzer.ts` (changed) — see deviation 1 below
+- `src/worker/lib/ai/client.ts` (changed) — see deviation 2 below
+- `tests/unit/ai/client.test.ts` (changed) — 2 new tests covering the client.ts fix
+
+**Decisions/deviations from the plan (with reasons), both found via the real-API manual milestone
+run and fixed in this phase:**
+1. **`analyzeCv` (Phase 3) now passes `maxTokens: 8192` instead of `callStructured`'s 4096 default.**
+   The first real-API milestone run failed at the very first step: `CvAnalysisSchema` validation
+   failed on both the initial attempt and the corrective retry, with most top-level fields reported
+   as `undefined`. The realistic, content-rich fixture CV produced 13-14 claims, each with reasoning
+   and multiple `likelyQuestions` — comfortably exceeding 4096 output tokens, so the tool-call JSON
+   was truncated mid-generation. This is a Phase 3 file, but the bug was invisible to Phase 3's
+   mocked-only tests and only surfaced against the real API, so it's fixed and documented here.
+2. **`callStructured` (Phase 2, `client.ts`) now unwraps a single-key wrapper around the tool
+   input before giving up** (new `parseStructuredInput` helper). Real-API testing of the combined
+   evaluator+controller call (`EvaluationAndDecisionSchema`, a two-key nested-object schema) showed
+   the model frequently — and on at least one occasion, even after the corrective retry — invoking
+   the tool with `input: { parameters: { evaluation: {...}, decision: {...} } }` instead of putting
+   `evaluation`/`decision` directly on `input`, apparently mimicking a function-call-signature
+   convention. Debugged by re-running the exact failing call with raw response logging (see the
+   raw content block in the debug session), which showed the wrapper directly. The fix tries the raw
+   input first and, only if that fails and the input is a plain single-key object, also tries
+   validating that key's value — strictly more permissive acceptance (a schema-matching unwrapped
+   payload is accepted only because it matches the schema), not looser validation. Covered by two new
+   tests in `client.test.ts`. This is a Phase 2 file; fixed here because it was a systemic issue
+   (observed on both `interviewer` and `evaluator` calls) discovered by this phase's real-API gate,
+   not something the mocked Phase 2 tests could have caught.
+3. Also tightened both prompts with literal JSON-shape examples (not just prose) after the first
+   real-API run showed the interviewer's `expectedConcepts` failing validation as a string instead of
+   an array on essentially every first attempt, and the evaluator's `evaluation`/`decision` nesting
+   failing on most first attempts. The literal examples reduced — but did not eliminate — first-attempt
+   failures; the client.ts unwrap fix (deviation 2) is what actually closed the gap, since a residual
+   `decision.shouldComplete` omission was still observed after the prompt tightening alone. A further
+   prompt tweak makes `shouldComplete` explicitly "required, always include it even when false." All
+   observed first-attempt failures were recovered by the existing Phase 2 retry with zero crashes in
+   the final clean run.
+4. **`scripts/interview-cli.ts` hardened against `ERR_USE_AFTER_CLOSE`.** Verifying the actual
+   deliverable CLI (not just the ad-hoc scripted-candidate driver used for the milestone run) via a
+   piped-stdin smoke test surfaced a crash: Node's `readline/promises` interface can hit EOF and
+   auto-close before `rl.question()` is ever called when stdin is a non-TTY pipe, and a subsequent
+   `.question()` call throws `ERR_USE_AFTER_CLOSE` instead of returning. The loop now catches that
+   specific error code and treats it the same as `/quit` (graceful early exit) rather than crashing
+   with a raw stack trace. This only manifests for piped/non-interactive stdin, not a real terminal
+   session (which never hits EOF mid-session), but the harness should not crash regardless of how
+   stdin ends.
+5. **Manual verification split across two scripts.** A full adaptive interview needs answers that
+   react sensibly to whatever the model actually asks, which the interactive CLI can't do
+   non-interactively. So verification used two things: (a) a temporary, git-ignored scratch script
+   (deleted after use, never committed) that called the same `analyzeCv`/`generateQuestion`/
+   `evaluateAnswer`/`applyEvaluation`/`selectNextClaim`/`shouldCompleteInterview` functions with a
+   small bank of pre-written strong/vague/"we"-heavy/hedged answers selected by matching the
+   **claim's own text** (not the interviewer's live question text — an early version matched on the
+   question text and broke when a question itself said "let's move off Kafka," spuriously
+   re-triggering the Kafka answer); and (b) a short piped smoke test of the actual
+   `scripts/interview-cli.ts` deliverable (one real turn, then `/quit`) to confirm its own wiring
+   (arg parsing, `.dev.vars` loading, readline handling, output formatting) independent of the
+   scratch driver. Both used the real Anthropic API with a key the user supplied for this purpose.
+
+**Manual First-Milestone checklist (build-plan §52), evaluated against the final clean real-API run
+(14 claims extracted from `tests/fixtures/cvs/senior-java-cv.txt`, 13 questions, ended via the
+evaluator's own `INTERVIEW_COMPLETE` signal at `estimatedCompletion: 0.925`):**
+- [x] questions were based on actual CV claims — every question named the specific CV claim (the
+  strangler-fig monolith decomposition, the 3-cluster Kafka exactly-once pipeline, the "AWS across
+  the board" line, the PCI-DSS project, the vague "improved performance" bullet).
+- [x] follow-ups reacted meaningfully to answers — e.g. when the candidate kept answering about
+  shipments/billing instead of orders, the interviewer explicitly named the mismatch each time and
+  progressively narrowed the question ("Let's be very concrete just about orders...", then "yes or
+  no, was there an API call...").
+- [x] generic/vague answers were challenged — the "We worked with AWS across the board" answer was
+  challenged three times, narrowing "pick one service" → "pick RDS" → "name one concrete setting or
+  admit someone else owned it"; the "we made a lot of performance and reliability improvements"
+  answer was immediately challenged for a baseline metric and root cause.
+- [x] strong answers caused topic progression — the one genuinely strong, specific answer (Kafka
+  exactly-once/dedupe-key mechanism, with correct "I personally rewrote..." ownership language) was
+  followed by exactly one question, scored `technicalAccuracy=8`, and the controller moved
+  (`NEW_TOPIC`) to AWS immediately rather than continuing to press a claim with solid evidence.
+- [x] weak/evasive answers caused deeper probing — the monolith-decomposition claim got six
+  consecutive escalating follow-ups (general → orders-specifically → "yes or no" → direct
+  personal-ownership question) before the controller banked partial credit and moved on; the AWS
+  claim got three escalating narrowings before moving on.
+- [x] questions were technically correct — mechanistically accurate throughout (Kafka transaction
+  boundaries vs. idempotent-producer guarantees, `sendOffsetsToTransaction`, dual-write problem,
+  outbox/CDC alternatives, RDS Multi-AZ/IOPS/parameter groups, PCI-DSS CDE scope/tokenization).
+- [x] the AI did not invent work experience — it only ever questioned what the CV or the transcript
+  actually said, and drew conclusions ("this pattern suggests the claim may not be genuine") from the
+  candidate's own non-answers rather than asserting anything false about them.
+- [x] felt like a senior technical interview, not an AI tutor — zero encouragement language anywhere
+  in any run; the interviewer was consistently direct and skeptical, including explicitly naming
+  repetition/evasion patterns the way a real interviewer would ("You've given me the exact same list
+  twice now after I asked for one specific RDS setting.").
+
+**Example transcript excerpt (strong answer → immediate progression, the clearest single illustration
+of adaptive quality):**
+> **Interviewer:** On the Kafka event backbone you mention: for the payment-settlement pipeline, you
+> say you achieved exactly-once semantics using Kafka transactions and idempotent producers. Kafka's
+> transactional guarantees cover producer-to-broker delivery, but they don't automatically make an
+> external side effect — like actually calling out to a payment gateway — idempotent. Concretely, how
+> did your settlement consumer avoid double-charging a payment gateway if it crashed after processing
+> a transaction but before committing its offset?
+>
+> **Candidate:** ...The DB write and the offset commit aren't atomic, so I made the settlement write
+> idempotent using the payment intent id as a dedupe key in Postgres, upserted with ON CONFLICT DO
+> NOTHING before the offset commit happens.
+>
+> *(internal decision, never shown to candidate): NEW_TOPIC → aws-across-the-board; "The candidate
+> gave a concrete, specific, and technically sound answer distinguishing personal contribution and
+> correctly identifying the true failure mode and mitigation. This claim now has solid evidence; time
+> to move to an untested high-risk claim."*
+
+**Known gaps:** None against Phase 5's own scope. Report generation is not wired into
+`scripts/interview-cli.ts` yet, as specified (Phase 6's job). The deviation-2 fix in `client.ts`
+and deviation-1 fix in `analyzer.ts` are real bugs that were only reachable via the live API, so
+Phases 2 and 3's original mocked test suites could not have caught them — their existing tests
+still pass unchanged, and two new tests were added to `client.test.ts` for the fix itself.
+
+**Exact commands to run/test it:**
+- `npm run typecheck` — passes, zero errors
+- `npm test` — passes: 15 test files, 88 tests total (5 new interviewer tests + 4 new evaluator
+  tests + 2 new client.ts unwrap tests + Phase 0–4's 77)
+- `npm run test:unit` — passes
+- `npm run lint` — passes, zero errors/warnings
+- `npm run build` — succeeds, unaffected by this phase
+- `npm run interview:cli -- --cv tests/fixtures/cvs/senior-java-cv.txt --jd tests/fixtures/jobDescriptions/senior-backend-jd.txt --debug` —
+  manual, real-API run; requires a real `ANTHROPIC_API_KEY` in `.dev.vars` (not the Phase 0
+  placeholder)
+
+**Acceptance criteria:** all checked — `generateQuestion`/`evaluateAnswer` implemented and unit
+tested with mocked AI (9 new tests); `scripts/interview-cli.ts` runs a full interview end-to-end
+against the real API (verified both via the scratch driver's full 13-question interview and a
+direct piped smoke test of the CLI file itself); the manual First-Milestone checklist above passed,
+with a real-API example transcript excerpt recorded.
 
 ---
 
