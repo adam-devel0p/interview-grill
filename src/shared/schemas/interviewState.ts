@@ -18,5 +18,13 @@ export const InterviewStateSchema = z.object({
   }),
   majorQuestionsAsked: z.number(),
   estimatedCompletion: z.number().min(0).max(1),
+  // Phase 4 addition (not in the original build-plan spec): the ids of every
+  // high-risk claim from the CvAnalysis this interview was initialized from,
+  // captured once at `initInterviewState` time. `applyEvaluation` (Phase 4) needs
+  // "tested high-risk claims / total high-risk claims" to recompute
+  // `estimatedCompletion`, but only receives per-turn evaluation/decision data, not
+  // the full CvAnalysis — storing this list on the state avoids threading `analysis`
+  // through every `applyEvaluation` call.
+  highRiskClaimIds: z.array(z.string()),
 });
 export type InterviewState = z.infer<typeof InterviewStateSchema>;

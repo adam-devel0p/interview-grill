@@ -19,6 +19,7 @@ const validState = {
   },
   majorQuestionsAsked: 5,
   estimatedCompletion: 0.4,
+  highRiskClaimIds: ["claim-1", "claim-3"],
 };
 
 describe("InterviewStateSchema", () => {
@@ -47,5 +48,10 @@ describe("InterviewStateSchema", () => {
       topicScores: { JAVA: "high" },
     });
     expect(result.success).toBe(false);
+  });
+
+  it("rejects a state missing highRiskClaimIds", () => {
+    const { highRiskClaimIds: _highRiskClaimIds, ...missingHighRisk } = validState;
+    expect(InterviewStateSchema.safeParse(missingHighRisk).success).toBe(false);
   });
 });

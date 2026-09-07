@@ -361,6 +361,13 @@ export const InterviewStateSchema = z.object({
   }),
   majorQuestionsAsked: z.number(),
   estimatedCompletion: z.number().min(0).max(1),
+  // Added in Phase 4 (not in the original spec): ids of every high-risk claim from
+  // the CvAnalysis this interview was initialized from, captured once by
+  // `initInterviewState`. `applyEvaluation` needs "tested high-risk claims / total
+  // high-risk claims" to recompute `estimatedCompletion` but only receives per-turn
+  // evaluation/decision data, not the full CvAnalysis — see Phase 4's Completion
+  // Report for the full rationale.
+  highRiskClaimIds: z.array(z.string()),
 });
 export type InterviewState = z.infer<typeof InterviewStateSchema>;
 ```
@@ -1215,7 +1222,128 @@ export function selectNextClaim(
 
 ### Completion Report
 
-_Not started._
+**Status:** Complete.
+
+**What was built:** `src/worker/lib/interview/state.ts` (`initInterviewState`,
+`applyEvaluation`) and `src/worker/lib/interview/controller.ts`
+(`shouldCompleteInterview`, `selectNextClaim`) — pure, deterministic, no I/O, exactly as
+scoped. Plus unit tests in `tests/unit/interview/{state,controller}.test.ts`.
+
+**File list (new/changed):**
+- `src/worker/lib/interview/state.ts` (new)
+- `src/worker/lib/interview/controller.ts` (new)
+- `tests/unit/interview/state.test.ts` (new) — 12 tests
+- `tests/unit/interview/controller.test.ts` (new) — 9 tests
+- `src/shared/schemas/interviewState.ts` (changed) — added `highRiskClaimIds:
+  z.array(z.string())` (see deviation 1 below); Section 4.5 in this document updated
+  to match.
+- `tests/unit/schemas/interviewState.test.ts` (changed) — fixture updated with the new
+  field, plus one new invalid-input test for it (kept Phase 1's schema tests
+  exhaustive per its own acceptance criteria, not just Phase 4's).
+
+**Documented heuristics/formulas (build-plan doesn't specify exact ones):**
+1. **`testedClaimIds` rule:** a claim is pushed into `testedClaimIds` (if not already
+   present) whenever `decision.action` is anything other than `FOLLOW_UP`/`CLARIFY` —
+   those two actions mean "still gathering evidence on this same claim." So repeated
+   `FOLLOW_UP`/`CLARIFY` turns never add the claim (not "added once then re-added" —
+   literally not added until the interviewer moves on), and once added, later turns
+   referencing the same `claimId` can't duplicate it (`includes` guard).
+2. **`topicScores` formula:** a per-turn composite score
+   `0.4*technicalAccuracy + 0.3*depth + 0.3*specificity` (all 1-10), folded into a
+   per-category value via an exponential moving average with `alpha = 0.4`
+   (`next = 0.4*composite + 0.6*previous`; the first evaluation for a category sets it
+   directly). Chosen over a plain running average because it needs no extra
+   count-tracking state and naturally weights recent answers more heavily, which suits
+   an adaptive interview.
+3. **`candidatePatterns` thresholds** (all against the evaluator's 1-10 scales):
+   `buzzwordAnswers` when `buzzwordRisk >= 7`; `vagueAnswers` when `specificity <= 3`
+   OR `interviewerConfidence === "surface_level"`; `strongConcreteAnswers` when
+   `specificity >= 7 AND technicalAccuracy >= 7 AND realWorldEvidence >= 7`.
+4. **`excessiveWeLanguage` (heuristic, no dedicated `AnswerEvaluation` field):**
+   incremented when `evaluation.weaknesses` contains any of a fixed keyword list
+   (`"we-language"`, `"individual contribution"`, `"unclear ownership"`, `"team
+   effort"`, etc. — see `WE_LANGUAGE_KEYWORDS` in `state.ts`). This assumes Phase 5's
+   evaluator prompt is written to call out unclear personal ownership using
+   recognizable language when it detects it; Phase 5 should keep that phrasing (or
+   this list needs updating alongside it).
+5. **`contradictions` (heuristic, no dedicated field):** a `redFlag` is also appended
+   to `contradictions` when its text contains `"contradict"`/`"inconsistent"`/
+   `"inconsistency"`. Same caveat as above — depends on Phase 5's evaluator prompt
+   using this language when it finds a contradiction.
+6. **`activeClaimId` rule:** `NEW_TOPIC` sets it to `decision.nextTarget` (trusted
+   verbatim — the caller, e.g. Phase 8's route handler, is expected to fall back to
+   `selectNextClaim` if `nextTarget` doesn't resolve to a real claim);
+   `INTERVIEW_COMPLETE` clears it; every other action (`FOLLOW_UP`/`GO_DEEPER`/
+   `CHALLENGE`/`CLARIFY`) leaves it on the current `claimId` (still probing the same
+   claim).
+7. **`estimatedCompletion` formula:** if `decision.shouldComplete` is `true`, forced to
+   `1` outright (the AI's explicit signal is authoritative). Otherwise:
+   `0.6 * (tested high-risk claims / total high-risk claims) + 0.4 *
+   min(majorQuestionsAsked / 16, 1)`, clamped to `[0, 1]`. `16` is the midpoint of
+   build-plan §19's 12-20 question target range, used as the "full progress"
+   denominator. If there are zero high-risk claims, that term is treated as fully
+   satisfied (`1`) rather than dividing by zero.
+8. **`shouldCompleteInterview` signal priority** (documented per the phase's explicit
+   ask): because `applyEvaluation` already forces `estimatedCompletion` to `1` on
+   `decision.shouldComplete`, the `estimatedCompletion >= 0.9` check in
+   `shouldCompleteInterview` fires immediately in that case — so **the AI's signal
+   wins by construction**. The `majorQuestionsAsked >= 20` cap and the "all high-risk
+   claims tested AND majorQuestionsAsked >= 12" check are pure fallbacks for
+   interviews where the AI never signals completion.
+9. **`selectNextClaim` priority tiers:** (1) untested high-risk claims that also match
+   a `jobMatch.interviewPriorities` entry, (2) remaining untested high-risk claims,
+   (3) untested claims of any risk level matching a priority, (4) everything else, in
+   the CV's original claim order within each tier. "Matches a priority" is a
+   case-insensitive substring check of the whole priority string against the claim's
+   text/category/project/likelyQuestions, falling back to a per-word check (words
+   ≥4 chars) for short technology names — a deliberately simple heuristic, not NLP;
+   good enough to bias toward JD-relevant claims, not guaranteed precise.
+
+**Decisions/deviations from the plan (with reasons):**
+1. **Added `highRiskClaimIds: string[]` to `InterviewStateSchema` (Section 4.5),
+   computed once by `initInterviewState`.** The plan's sketch of `applyEvaluation`
+   only takes `{ claimId, evaluation, decision }` — no `CvAnalysis` — but computing
+   `estimatedCompletion` requires knowing the *total* number of high-risk claims, not
+   just which ones have been tested so far (which state already tracks via
+   `testedClaimIds`). Rather than threading `analysis` through every
+   `applyEvaluation` call (which the plan's signature doesn't include), the total is
+   captured once at init time, when `analysis` is already in hand. This is a Section 4
+   contract change; Section 4.5 in this document has been updated to match, and no
+   other phase's code references `InterviewStateSchema` yet, so nothing else needed
+   updating.
+2. **Added an optional `category?: ClaimCategory` field to `applyEvaluation`'s `ctx`**
+   (not in the plan's sketch signature, which only lists `claimId`). `topicScores` is
+   keyed by claim *category* (Section 4.5), but `applyEvaluation` has no `CvAnalysis`
+   to resolve `claimId -> category` itself. Phase 5's `evaluateAnswer` will have the
+   full `TechnicalClaim` object on hand (it's passed `claim` in its own `ctx`), so it's
+   the natural place to supply `category`; omitting it (e.g. for a topic-only question
+   with no backing claim) just skips the `topicScores` update for that turn rather than
+   erroring. This is an addition, not a replacement — `applyEvaluation`'s required
+   inputs are unchanged, so this doesn't affect any test or caller written against the
+   plan's original sketch.
+3. **`majorQuestionsAsked` increments unconditionally on every `applyEvaluation`
+   call**, regardless of `decision.action` — each call represents one asked-and-answered
+   question, so every processed turn counts, matching build-plan §19's target being a
+   count of substantive Q&A exchanges.
+
+**Known gaps:** None against Phase 4's scope. These functions are pure logic exercised
+directly by unit tests with hand-built fixtures — real end-to-end behavior (does the
+resulting adaptive flow actually feel like a good interview) can only be judged once
+Phase 5 wires an actual AI interviewer/evaluator on top, per that phase's manual
+First-Milestone gate.
+
+**Exact commands to run/test it:**
+- `npm run typecheck` — passes, zero errors
+- `npm test` — passes: 13 test files, 77 tests total (12 new `state.test.ts` + 9 new
+  `controller.test.ts` + 1 new/updated `interviewState.test.ts` case + Phase 0-3's 55)
+- `npm run test:unit` — passes (includes the two new `tests/unit/interview/**` files)
+- `npm run lint` — passes, zero errors/warnings
+- `npm run build` — succeeds, unaffected by this phase
+
+**Acceptance criteria:** all checked — every function in `state.ts`/`controller.ts` is
+pure (no I/O) and fully unit tested with deterministic fixtures; every
+heuristic/formula not fully specified by the build plan is documented above (and
+mirrored as code comments in `state.ts`/`controller.ts`); `npm run test:unit` passes.
 
 ---
 
