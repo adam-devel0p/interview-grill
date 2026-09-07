@@ -60,3 +60,27 @@ export function getModelFor(config: AppConfig, requestType: AiRequestType): stri
       return config.reportModel;
   }
 }
+
+interface ModelPricing {
+  inputPerMillionUsd: number;
+  outputPerMillionUsd: number;
+}
+
+/**
+ * Placeholder $/token pricing (USD per 1M tokens) used only to populate
+ * `ai_usage.estimated_cost_usd` for cost-visibility purposes (build-plan §38) — not
+ * used for billing. Verify against https://www.anthropic.com/pricing before relying on
+ * these for real budget alerts; update here (never inline at a call site) if pricing
+ * changes.
+ */
+const MODEL_PRICING: Record<string, ModelPricing> = {
+  "claude-sonnet-5": { inputPerMillionUsd: 3, outputPerMillionUsd: 15 },
+  "claude-opus-5": { inputPerMillionUsd: 15, outputPerMillionUsd: 75 },
+  "claude-haiku-4-5-20251001": { inputPerMillionUsd: 1, outputPerMillionUsd: 5 },
+};
+const DEFAULT_MODEL_PRICING: ModelPricing = { inputPerMillionUsd: 3, outputPerMillionUsd: 15 };
+
+export function estimateCostUsd(model: string, inputTokens: number, outputTokens: number): number {
+  const pricing = MODEL_PRICING[model] ?? DEFAULT_MODEL_PRICING;
+  return (inputTokens / 1_000_000) * pricing.inputPerMillionUsd + (outputTokens / 1_000_000) * pricing.outputPerMillionUsd;
+}

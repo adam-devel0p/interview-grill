@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getModelFor, type AppConfig } from "../../src/worker/lib/config";
+import { estimateCostUsd, getModelFor, type AppConfig } from "../../src/worker/lib/config";
 
 function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
@@ -32,5 +32,20 @@ describe("getModelFor", () => {
 
   it("maps report to REPORT_MODEL", () => {
     expect(getModelFor(makeConfig(), "report")).toBe("report-model");
+  });
+});
+
+describe("estimateCostUsd", () => {
+  it("computes cost from known-model input/output pricing", () => {
+    // claude-sonnet-5: $3/1M input, $15/1M output
+    expect(estimateCostUsd("claude-sonnet-5", 1_000_000, 1_000_000)).toBeCloseTo(18);
+  });
+
+  it("returns 0 for 0 tokens", () => {
+    expect(estimateCostUsd("claude-sonnet-5", 0, 0)).toBe(0);
+  });
+
+  it("falls back to default pricing for an unknown model", () => {
+    expect(estimateCostUsd("some-future-model", 1_000_000, 1_000_000)).toBeCloseTo(18);
   });
 });

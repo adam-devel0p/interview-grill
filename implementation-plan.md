@@ -1956,7 +1956,118 @@ via `@cloudflare/vitest-pool-workers`.
 
 ### Completion Report
 
-_Not started._
+**Status:** Complete.
+
+**What was built:** `migrations/0001_init.sql` (exact copy of Section 4.7's SQL), six
+repository modules under `src/worker/lib/db/` (`interviews.ts`, `messages.ts`, `reports.ts`,
+`payments.ts`, `events.ts`, `aiUsage.ts`) implementing every function listed in the Scope
+section, a small shared `db/shared.ts` helper (`nowIso`, `isUniqueConstraintError`), an
+`estimateCostUsd(model, inputTokens, outputTokens)` placeholder pricing helper added to
+`config.ts`, and a full integration test suite (23 tests across 6 files) run against a real
+per-test-file D1 instance via `@cloudflare/vitest-pool-workers`.
+
+**File list (new/changed):**
+- `migrations/0001_init.sql` (new)
+- `src/worker/lib/db/shared.ts`, `interviews.ts`, `messages.ts`, `reports.ts`, `payments.ts`,
+  `events.ts`, `aiUsage.ts` (new); removed `src/worker/lib/db/.gitkeep`
+- `src/worker/lib/config.ts` (changed) — added `ModelPricing`, `MODEL_PRICING`,
+  `DEFAULT_MODEL_PRICING`, `estimateCostUsd`
+- `tests/vitest-pool-workers.d.ts` (new) — `/// <reference types="@cloudflare/vitest-pool-workers/types" />`
+  so `cloudflare:test` (`env`, `applyD1Migrations`, `D1Migration`) type-checks; nothing
+  previously pulled these ambient types in.
+- `tests/integration/helpers/migrate.ts` (new) — reads `migrations/0001_init.sql` via Vite's
+  `?raw` import (works inside the workerd test runtime because Vite inlines it at transform
+  time, no runtime `fs` access needed), splits it into individual statements on `;`, and
+  applies it with `applyD1Migrations` from `cloudflare:test`.
+- `tests/integration/helpers/fixtures.ts` (new) — shared `sampleCvAnalysis`,
+  `sampleInterviewState`, `sampleAnswerEvaluation`, `sampleReport` fixtures (mirroring the
+  valid fixtures already used in Phase 1's schema unit tests) reused across the six
+  integration test files instead of re-declaring them per file.
+- `tests/integration/db/{interviews,messages,reports,payments,events,aiUsage}.test.ts` (new)
+- `tests/unit/config.test.ts` (changed) — added an `estimateCostUsd` describe block (3 tests).
+
+**Decisions/deviations from the plan (with reasons):**
+1. **All repository functions take `db: D1Database` as their first parameter, not `env:
+   Env`.** The Scope bullets describe the implementation detail ("all via
+   `env.DB.prepare(...).bind(...)`") but don't mandate the function signature. Taking the
+   already-extracted `D1Database` keeps `db/*` decoupled from the full `Env` type (which also
+   carries AI keys, payment secrets, etc.) and mirrors Phase 2's `callStructured(anthropic:
+   Anthropic, params)` pattern of taking an already-extracted client rather than all of `env`.
+   Phase 8 passes `env.DB` at the call site.
+2. **Every insert-type function generates its own `id` via `crypto.randomUUID()` internally,
+   rather than requiring the caller to pass one in** — *except* `createInterview`, `addMessage`,
+   `recordPayment`, and `saveReport`, which take `id` as part of their params. Reasoning: the
+   plan's Scope section gives two functions an explicit signature with no `id` field —
+   `logEvent(interviewId | null, eventName, metadata?)` and `recordAiUsage({ interviewId,
+   requestType, model, inputTokens, outputTokens, estimatedCostUsd })` — so those two generate
+   their id internally to match that signature exactly. The other four have no explicit
+   signature in the plan; for those I kept `id` as a caller-supplied param (consistent with
+   `crypto.randomUUID()` being the app-wide ID policy per build-plan §36, generated wherever
+   the entity is conceptually created — e.g. Phase 8's route handler creates the interview id
+   up front since it needs to return `{ interviewId }` immediately). This is a mixed convention
+   (caller-supplied id for 4 modules, self-generated for 2) driven directly by what Section
+   4/Phase 7's Scope text actually specified rather than a free judgment call — flagging it
+   here so Phase 8 doesn't assume one uniform pattern.
+3. **Added `listEventsForInterview` to `events.ts`**, beyond the plan's Scope bullet (which
+   only lists `logEvent`). Needed a way to verify persistence in the integration test without
+   raw SQL outside `db/*` (the "no raw SQL elsewhere" rule in §2), and it mirrors every other
+   table's list/get accessor — kept minimal (one function, same shape as `listMessages`/
+   `listPaymentsForInterview`).
+3b. **`events.metadata_json` is `JSON.parse`d on read without Zod validation** (unlike every
+   other JSON column). Section 4 defines no schema for event metadata — it's intentionally
+   free-form (`Record<string, unknown>`) — so there's no schema to validate against; this is
+   the one JSON column where plain `JSON.parse` is correct, not an oversight.
+4. **`estimateCostUsd`'s per-model pricing table is a genuine placeholder**, as the plan
+   explicitly calls for ("documented placeholder rates, configurable"). Values used: Sonnet
+   5 $3/$15 per 1M input/output tokens, Opus 5 $15/$75, Haiku 4.5 $1/$5, with Sonnet-5-level
+   pricing as the fallback for an unrecognized model string. Comment in `config.ts` points at
+   verifying against `https://www.anthropic.com/pricing` before relying on these for real
+   budget alerts — nothing in the app treats this as billing-accurate.
+5. **`isUniqueConstraintError` matches on `/unique constraint failed/i` in the thrown error's
+   `message`.** Confirmed empirically against the real D1 (Miniflare/workerd) error text via
+   the `DuplicateReportError`/`DuplicatePaymentError` integration tests, which both pass.
+6. **List queries order by `created_at ASC, rowid ASC`**, not just `created_at`. IDs are
+   random UUIDs (build-plan §36), not sortable, and `created_at` (millisecond-resolution ISO
+   string) can collide for rapid inserts in tests; SQLite's implicit `rowid` (present on any
+   table without `WITHOUT ROWID`) gives a reliable insertion-order tiebreaker.
+7. **No real Cloudflare D1 database provisioned** — this was already flagged as a Phase 0
+   deviation (no `wrangler login` session in this environment) and still applies. All
+   integration tests run against Miniflare's local D1 simulation via
+   `@cloudflare/vitest-pool-workers`, which is what the plan's Testing requirements ask for
+   ("real (test) D1 instance via `@cloudflare/vitest-pool-workers`") — this does not require a
+   real remote database. **Still needed from the user before any real deploy:** `wrangler
+   login`, `wrangler d1 create interview-grill-db`, replace the placeholder `database_id` in
+   `wrangler.toml`, `npm run cf-typegen`, then `wrangler d1 migrations apply
+   interview-grill-db` (locally with `--local` and/or remotely) to actually run
+   `migrations/0001_init.sql` against it.
+
+**Known gaps (intentional, deferred to later phases):**
+- No route/handler code — Phase 8 is where these repository modules get called from HTTP
+  handlers.
+- No rate-limiting table/logic — out of Phase 7's scope (build-plan's D1-based sliding-window
+  fallback, per §1's Decisions table, is deferred to whichever later phase implements rate
+  limiting; Section 4.7 has no rate-limit table, so none was speculatively added here).
+- `interviews.status` values are typed as a local `InterviewStatus` union in `interviews.ts`
+  (not a Zod schema) since Section 4 documents them only as prose ("`interviews.status`
+  values (build-plan §31): ..."), not as a schema in Section 4.1-4.6 — consistent with the
+  plan's instruction that Section 4 is authoritative for schemas and this value set was never
+  given one.
+
+**Exact commands to run/test it:**
+- `npm run typecheck` — passes, zero errors
+- `npm test` — passes: 22 test files, 122 tests total (99 from Phases 0-6 + 23 new
+  integration tests + 3 new `estimateCostUsd` unit tests)
+- `npm run test:integration` — passes: 6 files, 23 tests, all against the real Miniflare D1
+  binding with `migrations/0001_init.sql` applied fresh per file in `beforeAll`
+- `npm run lint` — passes, zero errors/warnings
+- `npm run build` — succeeds, unaffected by this phase
+
+**Acceptance criteria:** all checked — every repository module implemented with prepared
+statements only (no string-interpolated SQL anywhere), the migration applies cleanly in
+`beforeAll` for every integration test file, the full integration suite passes against real
+(test-instance) D1, and every JSON column with a corresponding Section 4 schema
+(`analysis_json`, `interview_state_json`, `report_json`, `evaluation_json`) is Zod-validated
+via `parseOrThrow` on read, not just `JSON.parse`.
 
 ---
 
