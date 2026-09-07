@@ -898,7 +898,101 @@ mock) — **no real network calls**.
 
 ### Completion Report
 
-_Not started._
+**Status:** Complete.
+
+**What was built:** `src/worker/lib/ai/client.ts` exporting `callStructured`, plus
+`getModelFor` added to the existing `src/worker/lib/config.ts` (its `AppConfig` shape was
+already in place from Phase 0). `callStructured` uses **forced tool-use** (a single tool
+named `emit_structured_output` with `tool_choice: { type: "tool", name: ... }`, `input_schema`
+generated from the caller's Zod schema via `z.toJSONSchema`) to get JSON matching the schema
+— this was the plan's recommended, more-robust option, chosen over a JSON-only system-prompt
+instruction because Anthropic's tool-use path guarantees syntactically valid JSON and gives a
+structured way to send corrective feedback (a `tool_result` block) on retry.
+
+**File list (new/changed):**
+- `src/worker/lib/ai/client.ts` (new) — `AiRequestType`, `StructuredAiCallParams`,
+  `StructuredAiCallResult`, `AiResponseValidationError`, `AiRequestError`,
+  `STRUCTURED_OUTPUT_TOOL_NAME`, `callStructured`.
+- `src/worker/lib/config.ts` (changed) — added `getModelFor(config, requestType)` and a
+  type-only import of `AiRequestType` from `./ai/client` (config.ts already had
+  `analysisModel`/`interviewModel`/`reportModel` from Phase 0, so no other changes were
+  needed there).
+- `tests/unit/ai/client.test.ts` (new) — 7 tests, all against a fully mocked `Anthropic`
+  client (`{ messages: { create: vi.fn(...) } }`), no real network calls.
+- `tests/unit/config.test.ts` (new) — 3 tests for `getModelFor`'s request-type → model
+  mapping.
+
+**Behavior implemented:**
+1. **Structured extraction:** one forced tool call per attempt; the tool's `input_schema` is
+   `z.toJSONSchema(schema)` with the `$schema` key stripped (harmless either way per the
+   SDK's `Tool.InputSchema` type, which allows arbitrary extra keys, but stripping keeps the
+   payload minimal).
+2. **Validation + single retry:** the tool-call `input` is validated with `schema.safeParse`.
+   On failure, exactly one retry is issued: the corrective follow-up is sent as a real
+   `tool_result` content block (`is_error: true`) replying to the original `tool_use` id, with
+   `content` built only from `ZodError` issue paths/messages — never the raw model output —
+   appended to the conversation before re-issuing the same forced tool call. This follows the
+   Messages API's requirement that every `tool_use` block be followed by a matching
+   `tool_result` before further turns; a plain corrective text message would have violated
+   that and risked a 400. If the retry also fails validation (or the model still doesn't call
+   the tool), throws `AiResponseValidationError` with the retry's issues.
+3. **Network-error retry:** each individual `messages.create` call (the first attempt and,
+   separately, the retry attempt) gets its own small retry loop — up to 2 retries (3 attempts
+   total) with exponential backoff (250ms, 500ms) — but only for errors judged transient:
+   `status` in `{408,409,429,500,502,503,504}`, or SDK connection/timeout errors
+   (`APIConnectionError`/`APIConnectionTimeoutError`, matched by `error.name` since they don't
+   carry an HTTP `status`). Non-retryable errors (e.g. 400/401/403) fail immediately. Once
+   exhausted, throws `AiRequestError` wrapping the underlying SDK error as `cause`.
+4. **Usage:** returns `{ inputTokens, outputTokens }` summed across both the first and retry
+   HTTP calls when a retry occurred (so callers get true total token cost for the structured
+   call). Does not touch D1 — recording to `ai_usage` is left to Phase 7/8 as specified.
+5. **No content logging:** the one internal log call (`console.warn` on first-attempt
+   validation failure, kept only as a debugging breadcrumb) logs `requestType`, `model`,
+   `interviewId`, and Zod issue path/message pairs — never `messages`, `system`, or the raw
+   tool-call `input`.
+6. **`getModelFor`:** `"analysis"` → `analysisModel`, `"interviewer"`/`"evaluator"` →
+   `interviewModel` (matches build-plan §34's combined evaluator+controller call, which is
+   part of the interview turn, not a separate model tier), `"report"` → `reportModel`.
+
+**Decisions/deviations from the plan (with reasons):**
+1. **`AiRequestType` is defined once, in `client.ts`, and imported (type-only) into
+   `config.ts`**, rather than duplicated. The Phase 2 scope snippet shows `AiRequestType` and
+   `getModelFor`'s signature in two different code blocks without saying which file owns the
+   type; defining it once in `client.ts` (where every other AI-call type lives) and importing
+   it into `config.ts` avoids the two definitions drifting apart. No circular-import risk:
+   the import is `import type`, and `client.ts` does not import from `config.ts`.
+2. **`STRUCTURED_OUTPUT_TOOL_NAME` exported** even though the Phase 2 scope's sketch of the
+   module's public surface doesn't list it — needed so tests can construct realistic mock
+   `tool_use` blocks without hard-coding an internal string that could silently drift from
+   the implementation.
+3. **Retry backoff is real `setTimeout`-based** (250ms/500ms), not injectable/mockable. This
+   was a deliberate simplicity choice — build-plan and Phase 2 scope only ask for "backoff up
+   to a small fixed limit," not a specific injectable clock — at the cost of the "exhausted
+   retries" test taking ~750ms instead of being instant. Acceptable given the alternative
+   (a clock-injection seam) would add API surface not requested by the plan.
+4. **Non-retryable-status errors (e.g. 400) still get wrapped in `AiRequestError` after zero
+   retries**, rather than a separate error type — the plan only specifies `AiRequestError` for
+   "Anthropic API errors," without distinguishing retryable from non-retryable at the
+   error-type level, so callers branch on `.status`/`.name` on the wrapped `cause` if they
+   need that distinction later.
+
+**Known gaps:** None against Phase 2's scope. `recordAiUsage`/D1 wiring is explicitly Phase
+7/8 work, not this phase's.
+
+**Exact commands to run/test it:**
+- `npm run typecheck` — passes, zero errors
+- `npm test` — passes: 10 test files, 51 tests total (7 new AI-client tests + 3 new config
+  tests + Phase 0/1's 41)
+- `npm run test:unit` — passes (includes the new `tests/unit/ai/client.test.ts` and
+  `tests/unit/config.test.ts`)
+- `npm run lint` — passes, zero errors/warnings
+- `npm run build` — succeeds, unaffected by this phase
+
+**Acceptance criteria:** all checked — `callStructured` implements the retry/validation/error
+behavior above; zero hard-coded model-name strings outside `config.ts`'s defaults (`client.ts`
+takes `model` as a parameter); every test mocks the Anthropic SDK client object directly, so
+`npm test` makes zero real API calls; both `AiResponseValidationError` and `AiRequestError`
+are typed `Error` subclasses with a `requestType` field callers can branch on.
 
 ---
 

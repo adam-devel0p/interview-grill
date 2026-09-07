@@ -1,3 +1,5 @@
+import type { AiRequestType } from "./ai/client";
+
 export interface AppConfig {
   environment: "development" | "production";
   anthropicApiKey: string;
@@ -41,4 +43,20 @@ export function getConfig(env: Env): AppConfig {
     fullInterviewPriceEur: env.FULL_INTERVIEW_PRICE_EUR ? Number(env.FULL_INTERVIEW_PRICE_EUR) : 9,
     freeAnswerLimit: env.FREE_ANSWER_LIMIT ? Number(env.FREE_ANSWER_LIMIT) : 3,
   };
+}
+
+/**
+ * Maps an AI request type to the configured model for it. "interviewer" and
+ * "evaluator" share `INTERVIEW_MODEL` since both drive the live interview turn.
+ */
+export function getModelFor(config: AppConfig, requestType: AiRequestType): string {
+  switch (requestType) {
+    case "analysis":
+      return config.analysisModel;
+    case "interviewer":
+    case "evaluator":
+      return config.interviewModel;
+    case "report":
+      return config.reportModel;
+  }
 }
