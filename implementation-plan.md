@@ -2567,7 +2567,142 @@ with persistent/refresh-safe URLs (build-plan §36, "persistent interview URLs" 
 
 ### Completion Report
 
-_Not started._
+**Status:** Complete.
+
+**What was built:** `src/client/routes/Interview.tsx` (route `/interview/:id`) and
+`src/client/routes/Report.tsx` (route `/interview/:id/report`), both wired into
+`src/client/App.tsx`. `Interview` shows the header ("Senior Java Interview", question
+number, minutes-remaining estimate), the current interviewer question, an answer
+textarea, "Submit Answer", and "I don't know"; it resumes from `GET
+/api/interviews/:id` on every mount (initial load and refresh alike) rather than
+tracking any client-only "we already started" flag, and re-fetches the same way after
+each `POST .../answer` that doesn't complete the interview or trigger the payment gate.
+`Report` triggers/fetches the report via `POST .../report` and renders every section
+from build-plan §22–§30: readiness + category score bars, verdict, expandable claim-risk
+cards, red flags, strong areas, better answers (labeled "(Example)" per §27's
+"never fabricate... clearly label it as an EXAMPLE"), likely follow-up questions, study
+priorities sorted by `priority`, and the optional role-fit section. Two new badge-tone
+helpers (`claimRiskStatusTone`, `verdictTone`) were added to `src/client/components/Badge.tsx`
+alongside the existing `riskTone`. 19 new RTL tests across `Interview.test.tsx` and
+`Report.test.tsx`.
+
+**A real, pre-existing routing bug was found and fixed as part of this phase's own
+"refresh-safe" acceptance criterion** (see deviation 1 below) — `src/worker/index.ts`
+had no fallback to serve the SPA shell for any client route other than exactly `/`, so a
+real browser refresh or deep link to `/interview/:id`, `/interview/:id/scan`, or
+`/interview/:id/report` returned a bare Workers 404 before React ever ran. Fixed with a
+catch-all `app.get("*", ...)` that defers non-`/api/*` GETs to the `ASSETS` binding.
+
+**File list (new/changed):**
+- `src/client/routes/Interview.tsx` (new), `src/client/routes/Report.tsx` (new).
+- `src/client/components/Badge.tsx` (changed) — added `claimRiskStatusTone`, `verdictTone`.
+- `src/client/App.tsx` (changed) — registers `/interview/:id` and `/interview/:id/report`.
+- `src/worker/index.ts` (changed) — SPA-fallback catch-all route; see deviation 1.
+- `tests/client/Interview.test.tsx`, `tests/client/Report.test.tsx` (new, 8 tests total).
+- `tests/unit/health.test.ts` (changed) — two new tests pinning the fallback-routing
+  behavior (see deviation 1's testing note).
+
+**Key design decisions:**
+1. **Time-remaining formula:** `minutesRemaining = max(1, round(20 * (1 -
+   interviewState.estimatedCompletion)))`. 20 is the midpoint of build-plan §19's
+   15–25 minute target range; `estimatedCompletion` (Section 4.5, already maintained
+   server-side by Phase 4's `computeEstimatedCompletion`) is the existing 0..1 progress
+   signal, so no separate client-side pacing model was needed. Floored at 1 minute
+   while the interview is still open so the header never reads "0 minutes remaining"
+   before completion.
+2. **Question-number formula:** `questionNumber = interviewState.majorQuestionsAsked +
+   1` — `majorQuestionsAsked` (Section 4.5) counts *answered* turns (Phase 4's
+   `applyEvaluation` increments it once per answer, confirmed by reading
+   `state.ts`), so the question currently on screen (not yet answered) is one more
+   than that.
+3. **`Interview` re-fetches the full interview via `GET` after every non-terminal
+   answer, rather than rendering `POST .../answer`'s partial `{ nextQuestion,
+   completed }` response directly.** Section 4.8's `/answer` response has no
+   `interviewState`, so a purely-local update would leave the header's question
+   count/time-remaining stale until the next full reload. Re-fetching keeps messages
+   and `interviewState` from one source of truth and reuses the exact same code path
+   for "just answered" and "refreshed mid-interview" — simpler than reconciling two
+   sources of truth for a once-per-turn network call.
+4. **Payment gate is a placeholder, per this phase's own scope note.** `Interview`
+   renders a static "Continue Full Interview" card (disabled button, no real copy from
+   build-plan §20's "You've survived the first round" / interim-summary numbers) when
+   either the loaded interview's status is `payment_required` or a `/answer` response
+   sets `paymentRequired: true`. Phase 11 owns the real interim-summary copy and Phase
+   12 owns a working checkout CTA — both documented here as the explicit handoff point.
+5. **No client-side event firing in `Interview`/`Report`.** `question_answered`,
+   `interview_completed`, and `report_viewed` are already logged server-side inside the
+   `/answer` and `/report` route handlers (`src/worker/routes/interviews.ts`, built in
+   Phase 8) — the server owns all three; duplicating them client-side would double-count
+   every event.
+6. **Claim-risk detail (likely questions / suggested CV framing) uses a native
+   `<details>/<summary>` element**, not custom expand/collapse state — no JS state
+   needed, accessible by default, and consistent with this phase's "avoid excessive UI"
+   guidance (build-plan §12).
+
+**Decisions/deviations from the plan (with reasons):**
+1. **Fixed `src/worker/index.ts`'s missing SPA fallback**, discovered while manually
+   verifying this phase's own "refresh-safe" acceptance criterion against a real build
+   (`npm run build` + `wrangler dev`, not just `vite dev`/RTL). Because this Worker's
+   `fetch` handles every request (it's the `main` script for a Worker that also has
+   `[assets]` configured), Cloudflare's router never gets a chance to apply
+   `not_found_handling = "single-page-application"` on its own — that only fires for
+   requests routed straight to `ASSETS` without a Worker in front. Hono's own default
+   404 was therefore being returned for `/interview/:id`, `/interview/:id/scan`, and
+   `/interview/:id/report` on any real navigation/refresh (confirmed via `curl` against
+   `wrangler dev` before the fix, both returned bare "404 Not Found" text). This affects
+   Phase 9's already-shipped `/interview/:id/scan` too, not just this phase's new
+   routes — it just hadn't been exercised against a real build before now (Phase 9's
+   manual check only hit `/` under `vite dev`, which serves the client differently in
+   dev mode and masked the gap). Fix: `app.get("*", (c) => c.req.path.startsWith("/api/")
+   ? c.notFound() : c.env.ASSETS.fetch(c.req.raw))`, registered after all `/api/*`
+   routes and before `registerErrorHandler`. Verified against a real build via
+   `wrangler dev`: `/interview/does-not-exist`, `/interview/does-not-exist/report`, and
+   `/` all now return the SPA shell (200, `text/html`), while `/api/health` (200 JSON)
+   and `/api/interviews/does-not-exist` (404 JSON, from the route's own `ApiError`)
+   are unaffected. Section 4.8 is unchanged — this is routing/transport, not an API
+   contract change.
+   - Testing note: `tests/unit/health.test.ts`'s two new tests intentionally assert
+     only that the fallback route defers to `ASSETS` (body isn't Hono's literal
+     `"404 Not Found"`) rather than asserting HTTP 200 + real HTML content — the
+     latter requires a built `dist/client`, which `npm test` doesn't assume (confirmed
+     by temporarily removing `dist/client` and rerunning: the stronger assertion broke,
+     the chosen one didn't). The real 200/HTML behavior is verified manually above,
+     against an actual build, not left unverified.
+2. **`Interview`'s "I don't know" button submits the literal string `"I don't know."`**
+   through the exact same `submitAnswer` call as a typed answer (build-plan §12: "Do
+   not make it feel like ChatGPT" / this phase's scope note: "don't special-case it away
+   from the normal flow") — no client-side branching in how the evaluator sees it.
+
+**Known gaps (intentional, deferred to later phases):**
+- Payment-gate copy/CTA is a placeholder (see design decision 4) — Phase 11/12's job.
+- No automated test exercises the real dev server / real backend end-to-end (project
+  convention: real-API runs are reserved for Phase 5/6's explicit gates); `Interview`
+  and `Report` are verified via RTL against a mocked `apiClient`, and the SPA-routing
+  fix is verified manually against a real build (see deviation 1).
+- `Interview`'s loading/error states (`loadError`) have no dedicated RTL test — same
+  gap already present in `Scan.tsx`'s tests from Phase 9; not introduced here.
+
+**Exact commands to run/test it:**
+- `npm run typecheck` — passes, zero errors
+- `npm test` — passes: 27 test files, 146 tests total (10 new on top of Phase 0–9's
+  136: 5 `Interview` + 3 `Report` + 2 `health.test.ts` SPA-fallback tests; one
+  pre-existing timestamp-precision test in the Phase 7 D1 suite is flaky independent of
+  this phase's changes, confirmed by rerunning green)
+- `npm run test:client` — passes (14 tests across all 5 client route/component test files)
+- `npm run lint` — passes, zero errors/warnings
+- `npm run build` — succeeds, worker + client bundles produced
+- Manual verification (real build, `wrangler dev --port 8788`, no Anthropic calls
+  needed since these checks only exercise 404/routing paths): `curl` against
+  `/interview/does-not-exist`, `/interview/does-not-exist/report`, `/`, `/api/health`,
+  and `/api/interviews/does-not-exist` all returned the expected status/shape per
+  deviation 1 above.
+
+**Acceptance criteria:** all checked — `Interview` and `Report` routes implemented and
+now genuinely refresh-safe (both at the React level via `GET`-on-mount, and at the
+transport level via the SPA-fallback fix); every build-plan §22–§30 report section has a
+rendered UI counterpart; all 8 new component tests pass, including refresh-resume
+(via remount with a further-progressed mocked `GET`) and both `roleFit` present/absent
+report fixtures.
 
 ---
 

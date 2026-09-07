@@ -35,3 +35,36 @@ export function riskTone(riskLevel: "low" | "medium" | "high"): { tone: BadgeTon
       return { tone: "safe", label: "Risk: Low" };
   }
 }
+
+/** Maps a report `claimRisk[].status` (Section 4.6) to the badge tone + label used in the report. */
+export function claimRiskStatusTone(status: "SAFE" | "NEEDS_PRACTICE" | "HIGH_RISK"): {
+  tone: BadgeTone;
+  label: string;
+} {
+  switch (status) {
+    case "SAFE":
+      return { tone: "safe", label: "Safe" };
+    case "NEEDS_PRACTICE":
+      return { tone: "warning", label: "Needs Practice" };
+    case "HIGH_RISK":
+      return { tone: "danger", label: "High Risk" };
+  }
+}
+
+/** Maps a report `verdict.status` (Section 4.6) to the badge tone + label used in the report. */
+export function verdictTone(
+  status: "STRONG" | "INTERVIEW_READY" | "MOSTLY_READY" | "NEEDS_PREPARATION" | "HIGH_RISK",
+): { tone: BadgeTone; label: string } {
+  switch (status) {
+    case "STRONG":
+      return { tone: "safe", label: "Strong" };
+    case "INTERVIEW_READY":
+      return { tone: "safe", label: "Interview Ready" };
+    case "MOSTLY_READY":
+      return { tone: "warning", label: "Mostly Ready" };
+    case "NEEDS_PREPARATION":
+      return { tone: "warning", label: "Needs Preparation" };
+    case "HIGH_RISK":
+      return { tone: "danger", label: "High Risk" };
+  }
+}
